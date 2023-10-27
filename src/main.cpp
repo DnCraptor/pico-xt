@@ -12,6 +12,9 @@ extern "C" {
 #include <pico/stdlib.h>
 #include <hardware/vreg.h>
 #include "pico/stdio.h"
+#include "flash_ram.h"
+#include "vc.h"
+
 extern "C" {
 #include "vga.h"
 #include "ps2.h"
@@ -142,6 +145,31 @@ const uint8_t cga_gfxpal[2][2][4] = { //palettes for 320x200 graphics mode
 #define cga_color(c) ((uint32_t)cga_palette[c][2] | ((uint32_t)cga_palette[c][1]<<8) | ((uint32_t)cga_palette[c][0]<<16))
 
 #endif
+#define SRAM_SIZE (512 << 10)
+void testmem() {
+    uint32_t i, j;
+    printf("Writing...%i\r\n", SRAM_SIZE);
+    for (i=0; i<SRAM_SIZE; i++) {
+        SRAM_write(i, FD0[(i & SRAM_SIZE)]);
+    }
+    printf("Verifying... %i \r\n", SRAM_SIZE);
+    for (i=0; i<SRAM_SIZE; i++) {
+        //printf("%i\r\n", i);
+        if (SRAM_read(i) != FD0[(i & SRAM_SIZE)]) {
+            printf("FAILED at %i !\r\n" , i);
+            while (1) { }
+        }
+    }
+    printf("OK!\r\n");
+    printf("Testing byte 0 vs byte 32768... \r\n");
+    SRAM_write(0, 0x55);
+    SRAM_write(32768, 0xAA);
+    if ((SRAM_read(0) != 0x55) || (SRAM_read(32768) != 0xAA)) {
+        printf("FAILED!\r\n");
+    }
+    printf("OK!\r\n");
+}
+
 
 int main() {
 //    init86();
@@ -169,6 +197,9 @@ int main() {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, false);
     }
+
+    sleep_ms(3000);
+    testmem();
 
     Init_kbd();
     sem_init(&vga_start_semaphore, 0, 1);
@@ -274,3 +305,5 @@ int main() {
     }
     return 0;
 }
+
+
