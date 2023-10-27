@@ -12,8 +12,6 @@ extern "C" {
 #include <pico/stdlib.h>
 #include <hardware/vreg.h>
 #include "pico/stdio.h"
-#include "flash_ram.h"
-#include "vc.h"
 
 extern "C" {
 #include "vga.h"
@@ -145,14 +143,27 @@ const uint8_t cga_gfxpal[2][2][4] = { //palettes for 320x200 graphics mode
 #define cga_color(c) ((uint32_t)cga_palette[c][2] | ((uint32_t)cga_palette[c][1]<<8) | ((uint32_t)cga_palette[c][0]<<16))
 
 #endif
+
+#if 0
 #define SRAM_SIZE (512 << 10)
 void testmem() {
     uint32_t i, j;
+    uint32_t psram_begin, psram_elapsed;
+    float psram_speed;
+
+    puts("Testing FLASH_RAM...\r\n");
+
     printf("Writing...%i\r\n", SRAM_SIZE);
+    psram_begin = time_us_32();
     for (i=0; i<SRAM_SIZE; i++) {
         SRAM_write(i, FD0[(i & SRAM_SIZE)]);
     }
+    psram_elapsed = time_us_32() - psram_begin;
+    psram_speed = 1000000.0 * 8 * 1024.0 * 1024 / psram_elapsed;
+    printf("FLASH_RAM write %iKB in %d us, %lu KB/s\n", SRAM_SIZE, psram_elapsed, (uint32_t)psram_speed / 1024);
+
     printf("Verifying... %i \r\n", SRAM_SIZE);
+    psram_begin = time_us_32();
     for (i=0; i<SRAM_SIZE; i++) {
         //printf("%i\r\n", i);
         if (SRAM_read(i) != FD0[(i & SRAM_SIZE)]) {
@@ -160,6 +171,10 @@ void testmem() {
             while (1) { }
         }
     }
+
+    psram_elapsed = time_us_32() - psram_begin;
+    psram_speed = 1000000.0 * 8 * 1024.0 * 1024 / psram_elapsed;
+    printf("FLASH_RAM read %iKB in %d us, %lu KB/s\n", SRAM_SIZE, psram_elapsed, (uint32_t)psram_speed / 1024);
     printf("OK!\r\n");
     printf("Testing byte 0 vs byte 32768... \r\n");
     SRAM_write(0, 0x55);
@@ -169,7 +184,7 @@ void testmem() {
     }
     printf("OK!\r\n");
 }
-
+#endif
 
 int main() {
 //    init86();
@@ -198,8 +213,8 @@ int main() {
         gpio_put(PICO_DEFAULT_LED_PIN, false);
     }
 
-    sleep_ms(3000);
-    testmem();
+    //sleep_ms(3000);
+    // testmem();
 
     Init_kbd();
     sem_init(&vga_start_semaphore, 0, 1);

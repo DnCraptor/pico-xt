@@ -10,6 +10,7 @@
 //Runs with the internal flash memory swap system giving the emulator 1MB of RAM
 
 #include <hardware/flash.h>
+#include <hardware/sync.h>
 #include "memory.h"
 
 uint8_t lowmemRAM[0x600];
@@ -43,7 +44,6 @@ uint8_t SRAM_read(uint32_t address) {
             dirty1=0;
         }
 
-        printf("miss1\r\n");
         memcpy(cacheRAM1, (const uint8_t *)(XIP_BASE+block), FLASH_SECTOR_SIZE);
 
         block1=(address&0xfffff000)+FLASH_OFFSET;
@@ -60,7 +60,6 @@ uint8_t SRAM_read(uint32_t address) {
             restore_interrupts(interrupts);
             dirty2=0;
         }
-        printf("miss2\r\n");
         memcpy(cacheRAM2, (const uint8_t *)(XIP_BASE+block), FLASH_SECTOR_SIZE);
 
         block2=(address&0xfffff000)+FLASH_OFFSET;
