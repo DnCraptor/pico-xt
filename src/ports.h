@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "i8259.h"
+#include "../drivers/vga-nextgen/vga.h"
 
 #include <time.h>
 
@@ -22,8 +23,41 @@ uint8_t random() {
 
     return rand() % 256;
 }
+#else
+#include "vga.h"
 #endif
 
+const uint8_t cga_palette[16][3] = { //R, G, B
+        { 0x00, 0x00, 0x00 }, //black
+        { 0x00, 0x00, 0xAA }, //blue
+        { 0x00, 0xAA, 0x00 }, //green
+        { 0x00, 0xAA, 0xAA }, //cyan
+        { 0xAA, 0x00, 0x00 }, //red
+        { 0xAA, 0x00, 0xAA }, //magenta
+        { 0xAA, 0x55, 0x00 }, //brown
+        { 0xAA, 0xAA, 0xAA }, //light gray
+        { 0x55, 0x55, 0x55 }, //dark gray
+        { 0x55, 0x55, 0xFF }, //light blue
+        { 0x55, 0xFF, 0x55 }, //light green
+        { 0x55, 0xFF, 0xFF }, //light cyan
+        { 0xFF, 0x55, 0x55 }, //light red
+        { 0xFF, 0x55, 0xFF }, //light magenta
+        { 0xFF, 0xFF, 0x55 }, //yellow
+        { 0xFF, 0xFF, 0xFF }  //white
+};
+
+const uint8_t cga_gfxpal[2][2][4] = { //palettes for 320x200 graphics mode
+        {
+                { 0, 2,  4,  6 }, //normal palettes
+                { 0, 3,  5,  7 }
+        },
+        {
+                { 0, 10, 12, 14 }, //intense palettes
+                { 0, 11, 13, 15 }
+        }
+};
+
+#define cga_color(c) ((uint32_t)cga_palette[c][2] | ((uint32_t)cga_palette[c][1]<<8) | ((uint32_t)cga_palette[c][0]<<16))
 extern uint8_t videomode;
 uint16_t portram[256];
 
@@ -146,6 +180,16 @@ void portout(uint16_t portnum, uint16_t value) {
 
         case 0x3D9:
             pr3D9 = value;
+            uint32_t usepal = (value>>5) & 1;
+            uint32_t intensity = ( (value>>4) & 1) << 3;
+            for (int i = 0; i < 16; ++i) {
+
+                //for (int usepal = 0; usepal < 1; ++usepal)
+                  //  for (int intensity = 0; intensity < 1; ++intensity) {
+                        setVGA_color_palette(i, cga_color(i*2+usepal+intensity));
+                    //}
+
+            }
             break;
 
         case 0x3F8:               ////////////////////// WS: comm 1
