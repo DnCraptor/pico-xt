@@ -13,6 +13,8 @@ static FATFS fs;
 #define _FILE FIL
 _FILE fileA;
 _FILE * getFileA() { return &fileA; }
+_FILE fileB;
+_FILE * getFileB() { return &fileB; }
 _FILE fileC;
 _FILE * getFileC() { return &fileC; }
 #else
@@ -56,7 +58,7 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
 #if !CD_CARD_SWAP
         f_mount(&fs, "", 1);
 #endif
-        pFile = drivenum > 1 ? &fileC : &fileA;
+        pFile = drivenum > 1 ? &fileC : (drivenum ? &fileB : &fileA);
         FRESULT result = f_open(pFile, pathname, FA_READ | FA_WRITE);
         if (FR_OK != result) {
             return 1;
@@ -173,17 +175,25 @@ bool disk_C_write_sec(BYTE * buffer, LBA_t lba) {
     }
     return true;
 }
-
+/*
+static _FILE _df;
+static void logMsg(const char* m) {
+    f_open(&_df, "\\XT\\log", FA_WRITE | FA_OPEN_APPEND | FA_OPEN_ALWAYS);
+    UINT bw;
+    f_write(&_df, m, strlen(m), &bw);
+    f_write(&_df, "\r\n", 2, &bw);
+    f_close(&_df);
+}
+*/
 static void
 bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, uint16_t sect, uint16_t head,
               uint16_t sectcount, int is_verify
 ) {
-    uint32_t cursect, memdest, lba;
+    uint32_t cursect, memdest;
     size_t fileoffset;
 #if PICO_ON_DEVICE
     FRESULT result;
 #endif
-
     if (!disk[drivenum].inserted) {
         printf("no media %i\r\n", drivenum);
         CPU_AH = 0x31;    // no media in drive
@@ -195,16 +205,30 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
         goto error;
     }
     fileoffset = chs2ofs(drivenum, cyl, head, sect);
+    if (drivenum == 1) {
+        //char tmp[80]; sprintf(tmp, "lba: %d c: %d h: %d s: %d", fileoffset, cyl, head, sect); logMsg(tmp);
+    }
 
     if (disk[drivenum].diskfile != NULL && fileoffset > 0) {
 #if PICO_ON_DEVICE
+        gpio_put(PICO_DEFAULT_LED_PIN, true);
         result = f_lseek(disk[drivenum].diskfile, fileoffset);
+        if (drivenum == 1) {
+            //char tmp[80]; sprintf(tmp, "drivenum %i :: f_lseek result: %s (%d)", drivenum, FRESULT_str(result), result); logMsg(tmp);
+        }
+        gpio_put(PICO_DEFAULT_LED_PIN, false);
+        if (FR_OK != result) {
+            CPU_AH = 0x04;    // sector not found
+            goto error;            
+        }
 #else
         SDL_RWseek(disk[drivenum].diskfile, fileoffset, RW_SEEK_SET);
 #endif
     }
     if (fileoffset > disk[drivenum].filesize) {
-        printf("sector no found\r\n");
+        if (drivenum == 1) {
+           logMsg("sector no found");
+        }
         CPU_AH = 0x04;    // sector not found
         goto error;
     }
@@ -213,7 +237,6 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
     // for the readdisk function, we need to use write86 instead of directly fread'ing into
     // the RAM array, so that read-only flags are honored. otherwise, a program could load
     // data from a disk over BIOS or other ROM code that it shouldn't be able to.
-
     for (cursect = 0; cursect < sectcount; cursect++) {
         if (disk[drivenum].data != NULL && disk[drivenum].diskfile == NULL) {
             memcpy(sectorbuffer, &disk[drivenum].data[fileoffset], 512);
@@ -222,10 +245,13 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
             gpio_put(PICO_DEFAULT_LED_PIN, true);
             UINT bytes_read;
             result = f_read(disk[drivenum].diskfile, sectorbuffer, 512, &bytes_read);
-//            printf("drivenum %i :: f_read result: %s (%d)\r\n", drivenum, FRESULT_str(result), bytes_read);
-            if (FR_OK != result)
-                break;
             gpio_put(PICO_DEFAULT_LED_PIN, false);
+            if (drivenum == 1) {
+                //char tmp[80]; sprintf(tmp, "drivenum %i :: f_read result: %s (%d): %d", drivenum, FRESULT_str(result), result, bytes_read); logMsg(tmp);
+            }
+            if (FR_OK != result) {
+                break;
+            }
 #else
             SDL_RWread(disk[drivenum].diskfile, &sectorbuffer[0], 512,1);
 #endif
@@ -236,7 +262,9 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
                 // FIXME: segment overflow condition?
                 if (read86(memdest++) != sectorbuffer[sectoffset]) {
                     // sector verify failed!
-                    printf("                    // sector verify failed!");
+                    if (drivenum == 1) {
+                        logMsg("sector verify failed!");
+                    }
                     CPU_AL = cursect;
                     CPU_FL_CF = 1;
                     CPU_AH = 0xBB;    // error code?? what we should say in this case????
@@ -248,19 +276,23 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
                 // FIXME: segment overflow condition?
                 write86(memdest++, sectorbuffer[sectoffset]);
             }
-
         }
     }
     if (sectcount && !cursect) {
+        if (drivenum == 1) {
+           logMsg("sector no found: sectcount && !cursect");
+        }
         CPU_AH = 0x04;    // sector not found
-        goto error;            // not even one sector could be read?
+        goto error;       // not even one sector could be read?
     }
     CPU_AL = cursect;
     CPU_FL_CF = 0;
     CPU_AH = 0;
     return;
-    error:
-    printf("DISK ERROR %i 0x%x\r\n", drivenum, CPU_AH);
+error:
+    if (drivenum == 1) {
+        char tmp[80]; sprintf(tmp, "DISK ERROR %i 0x%x", drivenum, CPU_AH); logMsg(tmp);
+    }
     // AH must be set with the error code
     CPU_AL = 0;
     CPU_FL_CF = 1;

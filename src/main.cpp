@@ -294,8 +294,8 @@ int main() {
     }
 #endif
 
-    save_fdd_if_not(fdd0_sz(), fdd0_rom(), "\\XT\\fdd0.img");
-    save_fdd_if_not(fdd1_sz(), fdd1_rom(), "\\XT\\fdd1.img");
+  //  save_fdd_if_not(fdd0_sz(), fdd0_rom(), "\\XT\\fdd0.img");
+   // save_fdd_if_not(fdd1_sz(), fdd1_rom(), "\\XT\\fdd1.img");
 
     reset86();
     while (runing) {
@@ -449,9 +449,8 @@ int main() {
         exec86(340); // TODO: adjust execution cycles
         if_usb();
         int oc = overclock();
-        uint32_t bv = overcloking_khz;
-        if (oc > 0) overcloking_khz += 100;
-        if (oc < 0) overcloking_khz -= 100;
+        if (oc > 0) overcloking_khz += 1000;
+        if (oc < 0) overcloking_khz -= 1000;
         if (oc != 0) {
             uint vco, postdiv1, postdiv2;
             if (check_sys_clock_khz(overcloking_khz, &vco, &postdiv1, &postdiv2)) {
@@ -459,9 +458,8 @@ int main() {
                char tmp[80]; sprintf(tmp, "overcloking: %u kHz", overcloking_khz); logMsg(tmp);
             } else {
                char tmp[80]; sprintf(tmp, "System clock of %u kHz cannot be achieved", overcloking_khz); logMsg(tmp);
-               overcloking_khz = bv;
             }
-            sleep_ms(100);
+            sleep_ms(50);
         }
 #endif
     }
