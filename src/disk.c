@@ -61,9 +61,11 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
         pFile = drivenum > 1 ? &fileC : (drivenum ? &fileB : &fileA);
         FRESULT result = f_open(pFile, pathname, FA_READ | FA_WRITE);
         if (FR_OK != result) {
-            return 1;
+            if (size && ROM) pathname = 0;
+            else return 1;
+        } else {
+            size = f_size(pFile);
         }
-        size = f_size(pFile);
 #else
         file = SDL_RWFromFile(pathname, "r+w");
         if (!file) {
