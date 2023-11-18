@@ -225,22 +225,16 @@ static const char* path = "\\XT\\video.ram";
 static FATFS fs;
 static FIL file;
 static bool save_video_ram() {
-    FRESULT result = f_open(&file, path, FA_READ | FA_WRITE);
-    if (result != FR_OK) {
-        result = f_open(&file, path, FA_READ | FA_WRITE | FA_CREATE_NEW | FA_OPEN_APPEND);
-        if (result != FR_OK) {
-            return false;
-        }
+    FRESULT result = f_open(&file, path, FA_WRITE | FA_OPEN_ALWAYS);
+    if (result == FR_OK) {
         for (size_t i = 0; i < (sizeof(VRAM) << 10); i += 512) {
             UINT bw;
-            result = f_write(&file, VRAM + i, 512, &bw);
-            if (result != FR_OK) {
-                return false;
-            }
+            f_write(&file, VRAM + i, 512, &bw);
         }
         f_close(&file);
+        return true;
     }
-    return true;
+    return false;
 }
 static bool restore_video_ram() {
     FRESULT result = f_open(&file, path, FA_READ);

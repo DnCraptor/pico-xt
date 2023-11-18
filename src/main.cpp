@@ -184,6 +184,40 @@ pwm_config config = pwm_get_default_config();
 psram_spi_inst_t psram_spi;
 uint32_t overcloking_khz = OVERCLOCKING * 1000;
 #endif
+static FIL fdd_file;
+void save_fdd_if_not(size_t fdd_sz, const char* rom, const char* filename) {
+    FRESULT result = f_open(&fdd_file, filename, FA_READ | FA_WRITE);
+    if (FR_OK == result) {
+        f_close(&fdd_file);
+        return;
+    }
+    result = f_open(&fdd_file, filename, FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
+    if (FR_OK != result) {
+        return;
+    }/*
+    uint16_t cyls = 80;
+    uint16_t sects = 18;
+    uint16_t heads = 2;
+    if (fdd_sz <= 1228800)
+        sects = 15;
+    if (fdd_sz <= 737280)
+        sects = 9;
+    if (fdd_sz <= 368640) {
+        cyls = 40;
+        sects = 9;
+    }
+    if (fdd_sz <= 163840) {
+        cyls = 40;
+        sects = 8;
+        heads = 1;
+    }
+    fileoffset = chs2ofs(drivenum, cyl, head, sect);*/
+    for (size_t off = 0; off < fdd_sz; off += 512) {
+        UINT btw;
+        f_write(&fdd_file, rom + off, 512, &btw);
+    }
+    f_close(&fdd_file);
+}
 
 int main() {
 #if PICO_ON_DEVICE
@@ -259,6 +293,10 @@ int main() {
         while (runing) { sleep_ms(100); }
     }
 #endif
+
+    save_fdd_if_not(fdd0_sz(), fdd0_rom(), "\\XT\\fdd0.img");
+    save_fdd_if_not(fdd1_sz(), fdd1_rom(), "\\XT\\fdd1.img");
+
     reset86();
     while (runing) {
 #if !PICO_ON_DEVICE
@@ -408,20 +446,22 @@ int main() {
         }
         SDL_UpdateWindowSurface(window);
 #else
-        exec86(340);
+        exec86(340); // TODO: adjust execution cycles
         if_usb();
         int oc = overclock();
-        if (oc > 0) overcloking_khz += 1000;
-        if (oc < 0) overcloking_khz -= 1000;
+        uint32_t bv = overcloking_khz;
+        if (oc > 0) overcloking_khz += 100;
+        if (oc < 0) overcloking_khz -= 100;
         if (oc != 0) {
             uint vco, postdiv1, postdiv2;
             if (check_sys_clock_khz(overcloking_khz, &vco, &postdiv1, &postdiv2)) {
                set_sys_clock_pll(vco, postdiv1, postdiv2);
-               char tmp[80]; sprintf(tmp, "overcloking_khz: %u kHz", overcloking_khz); logMsg(tmp);
-               sleep_ms(33);
+               char tmp[80]; sprintf(tmp, "overcloking: %u kHz", overcloking_khz); logMsg(tmp);
             } else {
                char tmp[80]; sprintf(tmp, "System clock of %u kHz cannot be achieved", overcloking_khz); logMsg(tmp);
+               overcloking_khz = bv;
             }
+            sleep_ms(100);
         }
 #endif
     }
