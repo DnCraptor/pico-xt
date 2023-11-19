@@ -53,6 +53,7 @@ void ejectdisk(uint8_t drivenum) {
 uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
     if (drivenum & 0x80) drivenum -= 126;
     _FILE * pFile = NULL;
+    char tmp[80];
     if (pathname != NULL) {
 #if PICO_ON_DEVICE
 #if !CD_CARD_SWAP
@@ -61,8 +62,31 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
         pFile = drivenum > 1 ? &fileC : (drivenum ? &fileB : &fileA);
         FRESULT result = f_open(pFile, pathname, FA_READ | FA_WRITE);
         if (FR_OK != result) {
-            if (size && ROM) pathname = 0;
-            else return 1;
+            sprintf(tmp, "DRV#%x f_open result: %s (%d): %d", drivenum, FRESULT_str(result), result); logMsg(tmp);
+            if (size && ROM) {
+                result = f_open(pFile, pathname, FA_WRITE | FA_CREATE_ALWAYS);
+                sprintf(tmp, "DRV#%x f_open create result: %s (%d): %d", drivenum, FRESULT_str(result), result); logMsg(tmp);
+                if (FR_OK == result) {
+                    UINT btw;
+                    result = f_write(pFile, ROM, size, &btw);
+                    sprintf(tmp, "DRV#%x f_write result: %s (%d): %d", drivenum, FRESULT_str(result), result); logMsg(tmp);
+                    if (FR_OK == result) {
+                        f_close(pFile);
+                        result = f_open(pFile, pathname, FA_READ | FA_WRITE);
+                        if (FR_OK != result) {
+                            sprintf(tmp, "DRV#%x f_open#3 result: %s (%d): %d", drivenum, FRESULT_str(result), result); logMsg(tmp);
+                            pathname = 0; pFile = NULL;
+                        }
+                    } else {
+                        pathname = 0; pFile = NULL;
+                    }
+                } else {
+                    pathname = 0; pFile = NULL;
+                }
+            }
+            else {
+                return 1;
+            }
         } else {
             size = f_size(pFile);
         }
@@ -134,19 +158,23 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
         hdcount++;
     else
         fdcount++;
-    printf(
-            "DISK: Disk 0%02Xh has been attached %s from file %s size=%luK, CHS=%d,%d,%d\n",
+    sprintf(tmp,
+            "DISK: Disk 0%02Xh has been attached %s from file %s size=%luK, CHS=%d,%d,%d",
             drivenum,
             disk[drivenum].readonly ? "R/O" : "R/W",
-            "ROM",
+            pathname ? pathname: "ROM",
             (unsigned long) (size >> 10),
             cyls,
             heads,
             sects
     );
     return 0;
-    error:
-    fprintf(stderr, "DISK: ERROR: cannot insert disk 0%02Xh as %s because: %s\r\n", drivenum, "ROM", err);
+error:
+    sprintf(tmp, "DISK: ERROR: cannot insert disk 0%02Xh as %s because: %s",
+       drivenum,
+       pathname ? pathname : "ROM",
+       err
+    );
     return 1;
 }
 
@@ -177,22 +205,14 @@ bool disk_C_write_sec(BYTE * buffer, LBA_t lba) {
     }
     return true;
 }
-/*
-static _FILE _df;
-static void logMsg(const char* m) {
-    f_open(&_df, "\\XT\\log", FA_WRITE | FA_OPEN_APPEND | FA_OPEN_ALWAYS);
-    UINT bw;
-    f_write(&_df, m, strlen(m), &bw);
-    f_write(&_df, "\r\n", 2, &bw);
-    f_close(&_df);
-}
-*/
+
 static void
 bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, uint16_t sect, uint16_t head,
               uint16_t sectcount, int is_verify
 ) {
     uint32_t cursect, memdest;
     size_t fileoffset;
+    char tmp[80];
 #if PICO_ON_DEVICE
     FRESULT result;
 #endif
@@ -215,9 +235,7 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
 #if PICO_ON_DEVICE
         gpio_put(PICO_DEFAULT_LED_PIN, true);
         result = f_lseek(disk[drivenum].diskfile, fileoffset);
-        if (drivenum == 1) {
-            //char tmp[80]; sprintf(tmp, "drivenum %i :: f_lseek result: %s (%d)", drivenum, FRESULT_str(result), result); logMsg(tmp);
-        }
+        sprintf(tmp, "drivenum %i :: f_lseek result: %s (%d)", drivenum, FRESULT_str(result), result); logMsg(tmp);
         gpio_put(PICO_DEFAULT_LED_PIN, false);
         if (FR_OK != result) {
             CPU_AH = 0x04;    // sector not found
@@ -228,9 +246,7 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
 #endif
     }
     if (fileoffset > disk[drivenum].filesize) {
-        if (drivenum == 1) {
-           logMsg("sector no found");
-        }
+        logMsg("sector no found");
         CPU_AH = 0x04;    // sector not found
         goto error;
     }
@@ -248,9 +264,7 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
             UINT bytes_read;
             result = f_read(disk[drivenum].diskfile, sectorbuffer, 512, &bytes_read);
             gpio_put(PICO_DEFAULT_LED_PIN, false);
-            if (drivenum == 1) {
-                //char tmp[80]; sprintf(tmp, "drivenum %i :: f_read result: %s (%d): %d", drivenum, FRESULT_str(result), result, bytes_read); logMsg(tmp);
-            }
+            char tmp[80]; sprintf(tmp, "drivenum %i :: f_read result: %s (%d): %d", drivenum, FRESULT_str(result), result, bytes_read); logMsg(tmp);
             if (FR_OK != result) {
                 break;
             }
@@ -263,10 +277,7 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
             for (int sectoffset = 0; sectoffset < 512; sectoffset++) {
                 // FIXME: segment overflow condition?
                 if (read86(memdest++) != sectorbuffer[sectoffset]) {
-                    // sector verify failed!
-                    if (drivenum == 1) {
-                        logMsg("sector verify failed!");
-                    }
+                    logMsg("sector verify failed!");
                     CPU_AL = cursect;
                     CPU_FL_CF = 1;
                     CPU_AH = 0xBB;    // error code?? what we should say in this case????
@@ -281,9 +292,7 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
         }
     }
     if (sectcount && !cursect) {
-        if (drivenum == 1) {
-           logMsg("sector no found: sectcount && !cursect");
-        }
+        logMsg("sector no found: sectcount && !cursect");
         CPU_AH = 0x04;    // sector not found
         goto error;       // not even one sector could be read?
     }
@@ -292,9 +301,7 @@ bios_readdisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl, 
     CPU_AH = 0;
     return;
 error:
-    if (drivenum == 1) {
-        char tmp[80]; sprintf(tmp, "DISK ERROR %i 0x%x", drivenum, CPU_AH); logMsg(tmp);
-    }
+    sprintf(tmp, "DISK ERROR %i 0x%x", drivenum, CPU_AH); logMsg(tmp);
     // AH must be set with the error code
     CPU_AL = 0;
     CPU_FL_CF = 1;
@@ -373,7 +380,7 @@ bios_writedisk(uint8_t drivenum, uint16_t dstseg, uint16_t dstoff, uint16_t cyl,
     CPU_FL_CF = 0;
     CPU_AH = 0;
     return;
-    error:
+error:
     // AH must be set with the error code
     CPU_AL = 0;
     CPU_FL_CF = 1;

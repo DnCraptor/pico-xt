@@ -31,17 +31,20 @@
 #include "fdd.h"
 #include "startup_disk.h"
 
+static char* fdd0 = (char*)FDD0;
+static char* fdd1 = (char*)FDD1;
+
 char* fdd0_rom() {
-  return FDD0;
+  return fdd0;
 }
 char* fdd1_rom() {
-  return FDD1;
+  return fdd1;
 }
 size_t fdd0_sz() {
-  return sizeof FDD0;
+  return sizeof(FDD0);
 }
 size_t fdd1_sz() {
-  return sizeof FDD1;
+  return sizeof(FDD1);
 }
 
 #if CFG_TUD_MSC

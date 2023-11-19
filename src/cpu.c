@@ -26,7 +26,11 @@
 #include "vga.h"
 #include "psram_spi.h"
 extern psram_spi_inst_t psram_spi;
-
+// msc_disc.c
+char* fdd0_rom();
+char* fdd1_rom();
+size_t fdd0_sz();
+size_t fdd1_sz();
 #else
 
 #include "SDL2/SDL.h"
@@ -1051,9 +1055,10 @@ void intcall86(uint8_t intnum) {
              return;*/
 
         case 0x19:
-        //    insertdisk(0, fdd0_sz(), fdd0_rom(), NULL);
-            insertdisk(0, fdd0_sz(), fdd0_rom(), "\\XT\\fdd0.img");
-            insertdisk(1, fdd1_sz(), fdd1_rom(), "\\XT\\fdd1.img");
+            insertdisk(0, fdd0_sz(), fdd0_rom(), NULL);
+            //insertdisk(0, fdd0_sz(), fdd0_rom(), "\\XT\\fdd0.img");
+            insertdisk(1, fdd1_sz(), fdd1_rom(), NULL);
+            //insertdisk(1, fdd1_sz(), fdd1_rom(), "\\XT\\fdd1.img");
 #if PICO_ON_DEVICE
             insertdisk(128, 0, NULL, "\\XT\\hdd.img");
             keyboard_send(0xFF);

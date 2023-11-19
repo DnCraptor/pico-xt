@@ -184,40 +184,6 @@ pwm_config config = pwm_get_default_config();
 psram_spi_inst_t psram_spi;
 uint32_t overcloking_khz = OVERCLOCKING * 1000;
 #endif
-static FIL fdd_file;
-void save_fdd_if_not(size_t fdd_sz, const char* rom, const char* filename) {
-    FRESULT result = f_open(&fdd_file, filename, FA_READ | FA_WRITE);
-    if (FR_OK == result) {
-        f_close(&fdd_file);
-        return;
-    }
-    result = f_open(&fdd_file, filename, FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
-    if (FR_OK != result) {
-        return;
-    }/*
-    uint16_t cyls = 80;
-    uint16_t sects = 18;
-    uint16_t heads = 2;
-    if (fdd_sz <= 1228800)
-        sects = 15;
-    if (fdd_sz <= 737280)
-        sects = 9;
-    if (fdd_sz <= 368640) {
-        cyls = 40;
-        sects = 9;
-    }
-    if (fdd_sz <= 163840) {
-        cyls = 40;
-        sects = 8;
-        heads = 1;
-    }
-    fileoffset = chs2ofs(drivenum, cyl, head, sect);*/
-    for (size_t off = 0; off < fdd_sz; off += 512) {
-        UINT btw;
-        f_write(&fdd_file, rom + off, 512, &btw);
-    }
-    f_close(&fdd_file);
-}
 
 int main() {
 #if PICO_ON_DEVICE
@@ -252,7 +218,6 @@ int main() {
         gpio_put(PICO_DEFAULT_LED_PIN, false);
     }
 
-    //nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
     keyboard_init();
 
     sem_init(&vga_start_semaphore, 0, 1);
@@ -286,16 +251,15 @@ int main() {
         return -1;
     }
 #endif
+
     graphics_set_mode(TEXTMODE_80x30);
+
 #if CD_CARD_SWAP
     if (!init_vram()) {
         logMsg((char*)"init_vram failed");
         while (runing) { sleep_ms(100); }
     }
 #endif
-
-  //  save_fdd_if_not(fdd0_sz(), fdd0_rom(), "\\XT\\fdd0.img");
-   // save_fdd_if_not(fdd1_sz(), fdd1_rom(), "\\XT\\fdd1.img");
 
     reset86();
     while (runing) {
