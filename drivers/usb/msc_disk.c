@@ -28,20 +28,20 @@
 #include "usb.h"
 #include "emulator.h"
 
-#include "fdd.h"
+//#include "fdd.h"
 #include "startup_disk.h"
 
 char* fdd0_rom() {
   return FDD0;
 }
 char* fdd1_rom() {
-  return FDD1;
+  return NULL; // FDD1;
 }
 size_t fdd0_sz() {
   return sizeof FDD0;
 }
 size_t fdd1_sz() {
-  return sizeof FDD1;
+  return 0; // sizeof FDD1;
 }
 
 #if CFG_TUD_MSC
@@ -123,8 +123,7 @@ void tud_msc_capacity_cb(uint8_t lun, uint32_t* block_count, uint16_t* block_siz
 	}
 	break;
 	case 1: {
-      auto r = getFileB_sz();
-      *block_count = (r ? r : sizeof(FDD1)) / DISK_BLOCK_SIZE;
+      *block_count = getFileB_sz() / DISK_BLOCK_SIZE;
       *block_size  = DISK_BLOCK_SIZE;
 	}
 	break;
@@ -184,11 +183,11 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buff
 	}
 	break;
 	case 1: {
-    if (getFileB_sz()) {
+ //   if (getFileB_sz()) {
 		  return img_disk_read_sec(1, buffer, lba) ? bufsize : -1;
-    }
-		rom = FDD1;
-		rom_sz = sizeof(FDD1);
+  //  }
+	//	rom = FDD1;
+	//	rom_sz = sizeof(FDD1);
 	}
 	break;
 	case 2: {
