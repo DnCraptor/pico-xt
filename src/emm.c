@@ -62,10 +62,13 @@ uint16_t emm_conventional_segment() {
     return PHYSICAL_EMM_SEGMENT;
 }
 
+static bool unique_page_lockes[TOTAL_EMM_PAGES] = { 0 };
+
 typedef __attribute__ ((__packed__)) struct emm_record {
     uint8_t handler;
     uint8_t physical_page;
-    uint16_t logical_page;
+    uint16_t logical_page_per_handler;
+    uint16_t logical_page_unique;
 } emm_record_t;
 
 typedef emm_record_t emm_desc_table_t[PHYSICAL_EMM_PAGES];
@@ -99,14 +102,17 @@ void init_emm() {
     for (int i = 0; i < h->pages_acllocated; ++i) {
         emm_record_t * di = &emm_desc_table[i];
         di->handler = 0x00;
-        di->logical_page = i;
+        di->logical_page_per_handler = i;
+        di->logical_page_unique = i;
         di->physical_page = i;
+        unique_page_lockes[i] = true;
     }
     for (int i = h->pages_acllocated; i < PHYSICAL_EMM_PAGES; ++i) {
         emm_record_t * di = &emm_desc_table[i];
         di->handler = 0xFF;
-        di->logical_page = i;
-        di->physical_page = i;
+        di->logical_page_per_handler = 0;
+        di->logical_page_unique = 0;
+        di->physical_page = 0;
     }
     for (int j = 0; j < MAX_SAVED_EMM_TABLES; ++j) {
         emm_saved_table_t * st = &emm_saved_tables[j];
@@ -114,7 +120,8 @@ void init_emm() {
         for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
             emm_record_t * di = &st->table[i];
             di->handler = 0xFF;
-            di->logical_page = 0;
+            di->logical_page_per_handler = 0;
+            di->logical_page_unique = 0;
             di->physical_page = 0;
         }
     }
@@ -143,7 +150,7 @@ uint32_t get_logical_lba_for_physical_lba(uint32_t physical_lba_addr) {
     for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
         const emm_record_t * di = &emm_desc_table[i];
         if (di->physical_page + (PHYSICAL_EMM_SEGMENT >> 10) == physical_page_number && di->handler != 0xFF) {
-            uint32_t logical_page_number = di->logical_page;
+            uint32_t logical_page_number = di->logical_page_unique;
             uint32_t logical_base_lba = logical_page_number << 14;
             return logical_base_lba + offset_in_the_page + (EMM_LBA_SHIFT_KB << 10); // shift to do not intersect with on board RAM
         }
@@ -226,6 +233,25 @@ uint16_t reallocate_emm_pages(uint16_t handler, uint16_t pages) {
     return 0;
 }
 
+static inline bool is_page_free(uint16_t page) {
+    for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
+        emm_record_t * di = &emm_desc_table[i];
+        if (di->logical_page_unique == page && di->handler != 0xFF) {
+            return false;
+        }
+    }
+    return unique_page_lockes[page];
+}
+
+static inline uint16_t get_free_logical_page_unique() {
+    for (uint16_t page = 0; page < total_emm_pages(); ++page) {
+        if (is_page_free(page)) {
+            return page;
+        }
+    }
+    return 0xFFFF;
+}
+
 static inline uint32_t phisical_page_2_lba(uint32_t physical_page_number) {
     return (physical_page_number << 14) + (emm_conventional_segment() << 4);
 }
@@ -248,6 +274,7 @@ uint16_t map_unmap_emm_page(
             emm_record_t * di = &emm_desc_table[i];
             if (di->physical_page == physical_page_number && di->handler == emm_handle) {
                 di->handler = 0xFF;
+                unique_page_lockes[di->logical_page_unique] = false;
             }
         }
         return 0;
@@ -258,12 +285,18 @@ uint16_t map_unmap_emm_page(
                           // returned if a program attempts map a logical page when no
                           // logical pages are allocated to the handle.
     }
+    uint16_t logical_page_unique = get_free_logical_page_unique();
+    if (logical_page_unique == 0xFFFF) {
+        return 0x08A00; // TODO: ensure error code
+    }
     for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
         emm_record_t * di = &emm_desc_table[i];
         if (di->handler == 0xFF) { // empty line
             di->physical_page = physical_page_number;
-            di->logical_page = logical_page_number;
+            di->logical_page_per_handler = logical_page_number;
+            di->logical_page_unique = logical_page_unique;
             di->handler = emm_handle;
+            unique_page_lockes[logical_page_unique] = true;
             break;
         }
     }
@@ -400,13 +433,11 @@ uint16_t get_emm_pages_map_size() {
                      those mappable memory regions which are to have their
                      mapping context saved.  The structure members are described
                      below.
-
           .mappable_segment_count
                      The first member is a word which specifies the number of
                      members in the word array which immediately follows it.
                      This number should not exceed the number of mappable
                      segments in the system.
-
           .mappable_segment
                      The second member is a word array which contains the
                      segment addresses of the mappable memory regions whose

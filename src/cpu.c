@@ -828,7 +828,7 @@ static void custom_on_board_emm() {
         // DX = emm_handle
         uint8_t AL = CPU_AL;
         CPU_AX = map_unmap_emm_page(CPU_AL, CPU_BX, CPU_DX);
-        sprintf(tmp, "LIM40 FN %Xh res: phys page %Xh was mapped to %Xh log for %d EMM handler",
+        sprintf(tmp, "LIM40 FN %Xh res: phys page %d was mapped to %d logical for %d EMM handler",
                       FN, AL, CPU_BX, CPU_DX); logMsg(tmp);
         if (CPU_AX) zf = 1; else zf = 0;
         return;
@@ -837,7 +837,7 @@ static void custom_on_board_emm() {
     case 0x45: {
         uint16_t emm_handle = CPU_DX;
         CPU_AX = deallocate_emm_pages(emm_handle);
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh - EMM handler dealloc", FN, emm_handle); logMsg(tmp);
+        sprintf(tmp, "LIM40 FN %Xh res: %d - EMM handler dealloc", FN, emm_handle); logMsg(tmp);
         if (CPU_AX) zf = 1; else zf = 0;
         return;
     }
@@ -876,7 +876,7 @@ static void custom_on_board_emm() {
     // (including the operating system handle 0) in the system.
     case 0x4B: {
         CPU_BX = total_open_emm_handles();
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh - total_emm_handlers", FN, CPU_BX); logMsg(tmp);
+        sprintf(tmp, "LIM40 FN %Xh res: %d - total_emm_handlers", FN, CPU_BX); logMsg(tmp);
         CPU_AX = 0; zf = 0;
         return;
     }
@@ -894,7 +894,7 @@ static void custom_on_board_emm() {
         // ES:DI = pointer to handle_page
         uint32_t addr32 = ((uint32_t)CPU_ES << 4) + CPU_DI;
         CPU_BX = get_all_emm_handle_pages(addr32);
-        sprintf(tmp, "LIM40 FN %Xh all_handlers: %Xh (pages)", FN, CPU_BX); logMsg(tmp);
+        sprintf(tmp, "LIM40 FN %Xh all_handlers: %d (pages)", FN, CPU_BX); logMsg(tmp);
         CPU_AX = 0; zf = 0;
         return;
     }
