@@ -83,7 +83,7 @@ static _FILE* tryFlushROM(uint8_t drivenum, size_t size, char *ROM, char *path) 
 
 static _FILE* tryDefaultDrive(uint8_t drivenum, size_t size, char *path) {
     char* tmp[40];
-    sprintf(tmp, "Drive 0x%02X not found. Will try to init %s by size: %f MB...", drivenum, path, (size / 1024 / 1024.0f));
+    sprintf(tmp, "Drive 0x%02X not found. Will try to init %s by size: %f MB...", drivenum, path, (size / 1024.0f / 1024.0f));
     logMsg(tmp);
     _FILE *pFile = actualDrive(drivenum);
     FRESULT result = f_open(pFile, path, FA_WRITE | FA_CREATE_ALWAYS);
@@ -127,9 +127,10 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
                 if (!pFile)
                     pathname = NULL;
             } else {
-                pFile = tryDefaultDrive(drivenum, drivenum > 1 ? 0xFFF0000 : 1228800, pathname);
+                pFile = tryDefaultDrive(drivenum, drivenum > 1 ? 0xFFF0000 : 2949120, pathname);
                 if (!pFile)
                     return 1;
+                size = f_size(pFile);
             }
         } else {
             size = f_size(pFile);
@@ -161,10 +162,12 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
         sects = 63;
         heads = 16;
         cyls = size / (sects * heads * 512);
-    } else {   // it's a floppy image (1.44 МВ)
+    } else {   // it's a floppy image (2.88 МВ = 2949120 B)
         cyls = 80;
-        sects = 18;
+        sects = 36;
         heads = 2;
+        if (size <= 1474560) // 1.44 MB
+            sects = 18;
         if (size <= 1228800) // 1.2 MB
             sects = 15;
         if (size <= 737280) // 720 KB
@@ -181,6 +184,8 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
     }
     if (cyls > 1023 || cyls * heads * sects * 512 != size) {
         err = "Cannot find some CHS geometry for this disk image file!";
+        logMsg(err);
+        sleep_ms(5000);
         //goto error;
         // FIXME!!!!
     }
@@ -262,6 +267,7 @@ void logFile(char* msg) {
 }
 #endif
 
+char tmp[40];
 static void
 bios_readdisk(uint8_t drivenum,
               uint16_t dstseg, uint16_t dstoff,
@@ -308,7 +314,7 @@ bios_readdisk(uint8_t drivenum,
 #endif
     }
     if (fileoffset > disk[drivenum].filesize) {
-        printf("sector no found\r\n");
+        logMsg("sector no found");
         CPU_AH = 0x04;    // sector not found
         goto error;
     }
@@ -389,8 +395,8 @@ bios_readdisk(uint8_t drivenum,
     CPU_FL_CF = 0;
     CPU_AH = 0;
     return;
-    error:
-    printf("DISK ERROR %i 0x%x\r\n", drivenum, CPU_AH);
+error:
+    sprintf(tmp, "DISK READ ERROR %i 0x%x", drivenum, CPU_AH); logMsg(tmp);
     // AH must be set with the error code
     CPU_AL = 0;
     CPU_FL_CF = 1;
@@ -476,8 +482,9 @@ bios_writedisk(uint8_t drivenum,
     CPU_FL_CF = 0;
     CPU_AH = 0;
     return;
-    error:
+error:
     // AH must be set with the error code
+    sprintf(tmp, "DISK WRITE ERROR %i 0x%x", drivenum, CPU_AH); logMsg(tmp);
     CPU_AL = 0;
     CPU_FL_CF = 1;
 }
