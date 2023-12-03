@@ -56,14 +56,10 @@
 */
 #pragma once
 #include <inttypes.h>
+#include "emulator.h"
 
-#define ON_BOARD_RAM_KB (4ul << 10)
-#define BASE_X86_KB 1024ul
-#define TOTAL_XMM_KB (ON_BOARD_RAM_KB - BASE_X86_KB)
-#define TOTAL_EMM_KB (4ul << 10)
 #define EMM_LBA_SHIFT_KB ON_BOARD_RAM_KB
 #define TOTAL_EMM_PAGES (TOTAL_EMM_KB >> 4)
-#define TOTAL_VIRTUAL_MEMORY_KBS (ON_BOARD_RAM_KB + TOTAL_EMM_KB)
 
 #define PHYSICAL_EMM_SEGMENT 0xD000
 #define PHYSICAL_EMM_SEGMENT_KB 64
@@ -77,6 +73,7 @@
 #define MAX_EMM_HANDLERS 255
 #define MAX_EMM_HANDLER_NAME_SZ 8
 
+#ifdef EMS_DRIVER
 void init_emm();
 uint16_t emm_conventional_segment();
 uint16_t total_emm_pages();
@@ -104,11 +101,6 @@ void set_emm_pages_map(uint32_t addr32);
 uint16_t get_emm_pages_map_size();
 uint16_t get_partial_emm_page_map(uint32_t partial_page_map, uint32_t dest_array);
 uint16_t set_partial_emm_page_map(uint32_t dest_array);
-// from cpu.c
-void writew86(uint32_t addr32, uint16_t value);
-void write86(uint32_t addr32, uint8_t value);
-uint16_t readw86(uint32_t addr32);
-uint8_t read86(uint32_t addr32);
 
 uint16_t map_unmap_emm_pages(uint16_t handle, uint16_t log_to_phys_map_len, uint32_t log_to_phys_map);
 uint16_t map_unmap_emm_seg_pages(uint16_t handle, uint16_t log_to_seg_map_len, uint32_t log_to_segment_map);
@@ -123,3 +115,7 @@ uint8_t map_emm_and_call(uint8_t page_number_segment_selector, uint16_t handle, 
 void get_hardvare_emm_info(uint32_t hardware_info);
 uint16_t allocate_emm_pages_sys(uint16_t handler, uint16_t pages);
 uint16_t allocate_emm_raw_pages(uint16_t pages);
+
+void custom_on_board_emm();
+void emm_reboot();
+#endif

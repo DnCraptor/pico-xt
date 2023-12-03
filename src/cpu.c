@@ -33,6 +33,22 @@ extern psram_spi_inst_t psram_spi;
 
 #endif
 
+static bool a20_line_open = false;
+
+void notify_a20_line_state_changed(bool v) {
+    //if (v) logMsg("A20 ON");
+    //else logMsg("A20 OFF'");
+    a20_line_open = v;
+}
+
+bool is_a20_line_open() {
+    return a20_line_open;
+}
+
+uint8_t read86(uint32_t addr32);
+
+uint16_t readw86(uint32_t addr32);
+
 uint8_t opcode, segoverride, reptype, hdcount = 0, fdcount = 0, hltstate = 0;
 uint16_t segregs[4], ip, useseg, oldsp;
 uint8_t tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm;
@@ -54,8 +70,12 @@ static const uint8_t parity[0x100] = {
 #if PICO_ON_DEVICE
 __aligned(4096)
 #endif
-uint8_t RAM[RAM_SIZE << 10];
-uint8_t VRAM[VRAM_SIZE << 10];
+uint8_t RAM[RAM_SIZE];
+#if PICO_ON_DEVICE
+__aligned(4096)
+#endif
+uint8_t VIDEORAM[VIDEORAM_SIZE];
+
 
 uint8_t oper1b, oper2b, res8, nestlev, addrbyte;
 uint16_t saveip, savecs, oper1, oper2, res16, disp16, temp16, dummy, stacksize, frametemp;
@@ -99,231 +119,652 @@ void modregrm() {
     }
 }
 
-__inline void write86(uint32_t addr32, uint8_t value) {
+void write86(uint32_t addr32, uint8_t value);
+
+static __inline void writeVRAM(uint32_t addr32, uint16_t value) {
+    if (videomode >= 0x0D && ega_plane) {
+        addr32 += ega_plane * 16000;
+    }
+    VIDEORAM[(addr32 - VIDEORAM_START32) % 65536] = value;
+}
+
 #if PICO_ON_DEVICE
-    if ((PSRAM_AVAILABLE && (addr32) < (RAM_SIZE << 10)) || addr32 < RAM_PAGE_SIZE) { // Conventional in RAM size or first block
-        // do not touch first page
+void write86psram(uint32_t addr32, uint8_t value) {
+    if (addr32 < RAM_SIZE) {
+        // Conventional available
         RAM[addr32] = value;
         return;
     }
-#else
-    if (addr32 < (RAM_SIZE << 10)) {
-        RAM[addr32] = value;
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional in PSRAM
+        psram_write8(&psram_spi, addr32, value);
         return;
     }
-#endif
-    if (((addr32) >= 0xB8000UL) && ((addr32) < 0xC0000UL)) {
-        // video RAM range
-        addr32 -= 0xB8000UL;
-        VRAM[addr32] = value; // 16k for graphic mode!!!
-        return;
-    }
-    if (PSRAM_AVAILABLE && (addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
         uint32_t lba = get_logical_lba_for_physical_lba(addr32);
         if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
             psram_write8(&psram_spi, lba, value);
             return;
         }
-
-    } else if ((addr32) >= 0x100000UL && addr32 < (ON_BOARD_RAM_KB << 10)) { // XMS
-        if (get_a20_enabled()) { // A20 line is ON
+    }
+#endif
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            // A20 line is ON
             psram_write8(&psram_spi, addr32, value);
             return;
         }
-        write86(addr32 - 0x100000UL, value); // Rool back to low addressed
+        write86(addr32 - HMA_START_ADDRESS, value); // Rool back to low addressed
         return;
     }
-#if PICO_ON_DEVICE
+#endif
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < HMA_START_ADDRESS && umb_in_use(addr32)) {
+        // UMB
+        psram_write8(&psram_spi, addr32, value);
+        return;
+    }
+#endif
+#ifdef XMS_HMA
+    if ((addr32) >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if ((addr32) >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#endif
+        // XMS
+        psram_write8(&psram_spi, addr32, value);
+        return;
+    }
+#endif
+}
 
-#if SD_CARD_SWAP
-    if (addr32 >= RAM_PAGE_SIZE && addr32 < (640 << 10)) { // Conventional
+void write86sdcard(uint32_t addr32, uint8_t value) {
+    if (addr32 < RAM_PAGE_SIZE) {
+        // First not mapable block of Conventional RAM
+        RAM[addr32] = value;
+        return;
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional in swap
         ram_page_write(addr32, value);
         return;
     }
-    if ((addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
         uint32_t lba = get_logical_lba_for_physical_lba(addr32);
         if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
             ram_page_write(lba, value);
             return;
         }
     }
-    if ((addr32) >= 0x100000UL && addr32 < (ON_BOARD_RAM_KB << 10)) { // XMS
-        if (get_a20_enabled()) { // A20 line is ON
+#endif
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            // A20 line is ON
+            //char tmp[40]; sprintf(tmp, "HMAW %08Xh v: %02Xh", addr32, value); logMsg(tmp);
             ram_page_write(addr32, value);
             return;
         }
-        write86(addr32 - 0x100000UL, value); // Rool back to low addressed
+        //char tmp[40]; sprintf(tmp, "conW %08Xh v: %02Xh", addr32, value); logMsg(tmp);
+        write86(addr32 - HMA_START_ADDRESS, value); // Rool back to low addressed
         return;
     }
 #endif
-    if (PSRAM_AVAILABLE) { // Conentional (out of RAM size)
-        psram_write8(&psram_spi, addr32, value);
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < HMA_START_ADDRESS && umb_in_use(addr32)) {
+        // UMB
+        ram_page_write(addr32, value);
         return;
     }
 #endif
+#ifdef XMS_HMA
+    if ((addr32) >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if ((addr32) >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#endif
+        // XMS
+        ram_page_write(addr32, value);
+        return;
+    }
+#endif
+}
+#endif
+
+void write86(uint32_t addr32, uint8_t value) {
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        writeVRAM(addr32, value);
+        return;
+    }
+#if PICO_ON_DEVICE
+    if (PSRAM_AVAILABLE) {
+        write86psram(addr32, value);
+        return;
+    }
+    if (SD_CARD_AVAILABLE) {
+        write86sdcard(addr32, value);
+        return;
+    }
+#endif
+    if (addr32 < RAM_SIZE) {
+        RAM[addr32] = value;
+        return;
+    }
     // { char tmp[40]; sprintf(tmp, "ADDR W: 0x%X not found", addr32); logMsg(tmp); }
 }
 
-void writew86(uint32_t addr32, uint16_t value) {
-    bool w = (addr32 & 0xFFFFFFFE) == 0;
+INLINE void write16arr(uint8_t* arr, uint32_t base_addr, uint32_t addr32, uint16_t value) {
+    register uint8_t* ptr = arr - base_addr + addr32;
+    *ptr++ = (uint8_t)value;
+    *ptr = (uint8_t)(value >> 8);
+}
+
 #if PICO_ON_DEVICE
-    if (PSRAM_AVAILABLE && (addr32 > (RAM_SIZE << 10) && addr32 < (640 << 10))) { // Conventional
+
+INLINE void write86psram16(uint32_t addr32, uint16_t value) {
+    if (addr32 < RAM_SIZE) {
+        // First not mapable block of Conventional RAM
+        write16arr(RAM, 0, addr32, value);
+        return;
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional in swap
         psram_write16(&psram_spi, addr32, value);
         return;
     }
-    if (PSRAM_AVAILABLE && addr32 >= (BASE_X86_KB << 10) && addr32 < (ON_BOARD_RAM_KB << 10) && get_a20_enabled()) { // XMS
-        psram_write16(&psram_spi, addr32, value);
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        if (videomode >= 0x0D && ega_plane) {
+            addr32 += ega_plane * 16000; /// 32000 = 320x200x16
+        }
+        write16arr(VIDEORAM, 0, (addr32-VIDEORAM_START32) % 65536, value);
         return;
     }
-    if (PSRAM_AVAILABLE && w && (addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
         uint32_t lba = get_logical_lba_for_physical_lba(addr32);
         if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
             psram_write16(&psram_spi, lba, value);
             return;
         }
     }
-#if SD_CARD_SWAP
-    if (w && addr32 >= RAM_PAGE_SIZE && addr32 < (640 << 10)) { // Conventional
+#endif
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            // A20 line is ON
+            psram_write16(&psram_spi, addr32, value);
+            return;
+        }
+        writew86(addr32 - HMA_START_ADDRESS, value); // Rool back to low addressed
+        return;
+    }
+#endif
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < HMA_START_ADDRESS && umb_in_use(addr32)) {
+        // UMB
+        psram_write16(&psram_spi, addr32, value);
+        return;
+    }
+#endif
+#ifdef XMS_HMA
+    if ((addr32) >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if ((addr32) >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#endif
+        // XMS
+        psram_write16(&psram_spi, addr32, value);
+        return;
+    }
+#endif
+}
+
+INLINE void write86sdcard16(uint32_t addr32, uint16_t value) {
+    if (addr32 < RAM_PAGE_SIZE) {
+        // First not mapable block of Conventional RAM
+        write16arr(RAM, 0, addr32, value);
+        return;
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional in swap
         ram_page_write16(addr32, value);
         return;
     }
-    if (w && (addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
+
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
         uint32_t lba = get_logical_lba_for_physical_lba(addr32);
         if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
             ram_page_write16(lba, value);
             return;
         }
     }
-    if (w && addr32 >= (BASE_X86_KB << 10) && addr32 < (ON_BOARD_RAM_KB << 10) && get_a20_enabled()) { // XMS
+#endif
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            // A20 line is ON
+            //char tmp[40]; sprintf(tmp, "HMAW %08Xh v: %04Xh", addr32, value); logMsg(tmp);
+            ram_page_write16(addr32, value);
+            return;
+        }
+        //char tmp[40]; sprintf(tmp, "conW %08Xh v: %04Xh", addr32, value); logMsg(tmp);
+        writew86(addr32 - HMA_START_ADDRESS, value); // Rool back to low addressed
+        return;
+    }
+#endif
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < HMA_START_ADDRESS && umb_in_use(addr32)) {
+        // UMB
         ram_page_write16(addr32, value);
         return;
-    } 
+    }
 #endif
+#ifdef XMS_HMA
+    if ((addr32) >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if ((addr32) >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
 #endif
-    write86(addr32    , (uint8_t) value      );
-    write86(addr32 + 1, (uint8_t)(value >> 8));
+        // XMS
+        ram_page_write16(addr32, value);
+        return;
+    }
+#endif
+}
+#endif
+
+#ifdef HANDLE_REBOOT
+static bool reboot_exec = false;
+void reboot_detected() {
+    if (reboot_exec) {
+        reboot_exec = false;
+        return;
+    }
+    reboot_exec = true;
+    logMsg("REBOOT WAS DETECTED");
+    ports_reboot();
+    if (!PSRAM_AVAILABLE && SD_CARD_AVAILABLE && !init_vram()) {
+        logMsg((char *)"init_vram failed");
+        SD_CARD_AVAILABLE = false;
+    }
+    if (PSRAM_AVAILABLE) {
+        logMsg("PSRAM cleanup"); // TODO: block mode, ensure diapason
+        for (uint32_t addr32 = (1ul << 20); addr32 < (2ul << 20); addr32 += 4) {
+            psram_write32(&psram_spi, addr32, 0);
+        }
+    }
+#ifdef EMS_DRIVER
+    emm_reboot();
+#endif
+#ifdef XMS_DRIVER
+    xmm_reboot();
+#endif
+}
+#endif
+
+void writew86(uint32_t addr32, uint16_t value) {
+#ifdef HANDLE_REBOOT
+    if (addr32 == 0 && value == 0) {
+        // reboot hook
+        reboot_detected();
+    }
+#endif
+    if (addr32 & 0x00000001) {
+        // not 16-bit alligned
+        write86(addr32, (uint8_t)value);
+        write86(addr32 + 1, (uint8_t)(value >> 8));
+    }
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        if (videomode >= 0x0D && ega_plane) {
+            addr32 += ega_plane * 16000; /// 32000 = 320x200x16
+        }
+        write16arr(VIDEORAM, 0, (addr32-VIDEORAM_START32) % 65536, value);
+        return;
+    }
+#if PICO_ON_DEVICE
+    if (PSRAM_AVAILABLE) {
+        write86psram16(addr32, value);
+        return;
+    }
+    if (SD_CARD_AVAILABLE) {
+        write86sdcard16(addr32, value);
+        return;
+    }
+#endif
+    if (addr32 < RAM_SIZE) {
+        write16arr(RAM, 0, addr32, value);
+        return;
+    }
 }
 
-__inline uint8_t read86(uint32_t addr32) {
-#if PICO_ON_DEVICE && SD_CARD_SWAP
-    if ((!PSRAM_AVAILABLE && addr32 < (640 << 10)) || (PSRAM_AVAILABLE && addr32 < (RAM_SIZE << 10))) { // Conentional
-#else
-    if (addr32 < (RAM_SIZE << 10)) {
-#endif
-        // https://docs.huihoo.com/gnu_linux/own_os/appendix-bios_memory_2.htm
-#if SD_CARD_SWAP
-        if (PSRAM_AVAILABLE || addr32 < 4096) { // First page block
-            // do not touch first 4kb
-            return RAM[addr32];
-        }
-        return ram_page_read(addr32);
-#else
-        return RAM[addr32];
-#endif
-    }
-    else if (addr32 == 0xFC000) {
-        // TANDY graphics hack
-        return 0x21;
-    }
-    else if ((addr32 >= 0xFE000UL) && (addr32 <= 0xFFFFFUL)) {
+static __inline uint8_t read86rom(uint32_t addr32) {
+    if ((addr32 >= 0xFE000UL) && (addr32 <= 0xFFFFFUL)) {
         // BIOS ROM range
-        addr32 -= 0xFE000UL;
-        return BIOS[addr32];
+        return BIOS[addr32 - 0xFE000UL];
     }
-    if (PSRAM_AVAILABLE && (addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
+    if ((addr32 >= 0xF6000UL) && (addr32 < 0xFA000UL)) {
+        // IBM BASIC ROM LOW
+        return BASICL[addr32 - 0xF6000UL];
+    }
+    if ((addr32 >= 0xFA000UL) && (addr32 < 0xFE000UL)) {
+        // IBM BASIC ROM HIGH
+        return BASICH[addr32 - 0xFA000UL];
+    }
+    return 0;
+}
 
+static __inline uint16_t read16arr(uint8_t* arr, uint32_t base_addr, uint32_t addr32) {
+    register uint8_t* ptr = arr + addr32 - base_addr;
+    register uint16_t b1 = *ptr++;
+    register uint16_t b0 = *ptr;
+    return b1 | (b0 << 8);
+}
+
+INLINE uint16_t read86rom16(uint32_t addr32) {
+    if (addr32 >= 0xFE000UL && addr32 <= 0xFFFFFUL) {
+        // BIOS ROM range
+        return read16arr(BIOS, 0xFE000UL, addr32);
+    }
+    if (addr32 >= 0xF6000UL && addr32 < 0xFA000UL) {
+        // IBM BASIC ROM LOW
+        return read16arr(BASICL, 0xF6000U, addr32);
+    }
+    if ((addr32 >= 0xFA000UL) && (addr32 < 0xFE000UL)) {
+        // IBM BASIC ROM HIGH
+        return read16arr(BASICH, 0xFA000UL, addr32);
+    }
+    return 0;
+}
+#define __always_inline
+__always_inline uint8_t read86video_ram(uint32_t addr32) {
+    if (videomode >= 0x0D && ega_plane) {
+        addr32 += ega_plane * 16000;
+    }
+    return VIDEORAM[(addr32 - VIDEORAM_START32) % 65536];
+}
+
+#if PICO_ON_DEVICE
+INLINE uint8_t read86psram(uint32_t addr32) {
+    if (addr32 < RAM_SIZE) {
+        return RAM[addr32];
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional
+        return psram_read8(&psram_spi, addr32);
+    }
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        return read86video_ram(addr32);
+    }
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
         uint32_t lba = get_logical_lba_for_physical_lba(addr32);
         if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
             return psram_read8(&psram_spi, lba);
         }
     }
-#if SD_CARD_SWAP
-    else if ((addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
+#endif
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            return psram_read8(&psram_spi, addr32);
+        }
+        return read86(addr32 - HMA_START_ADDRESS); // FFFF:0010 -> 0000:0000 rolling address space for case A20 is turned off
+    }
+#endif
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < HMA_START_ADDRESS && umb_in_use(addr32)) {
+        // UMB
+        return psram_read8(&psram_spi, addr32);
+    }
+#endif
+#ifdef XMS_HMA
+    if (addr32 >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if (addr32 >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#endif
+        // XMS
+        return psram_read8(&psram_spi, addr32);
+    }
+#endif
+    return read86rom(addr32);
+}
+
+INLINE uint16_t read86psram16(uint32_t addr32) {
+    if (addr32 < RAM_SIZE) {
+        return read16arr(RAM, 0, addr32);
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional
+        return psram_read16(&psram_spi, addr32);
+    }
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        if (videomode >= 0x0D && ega_plane) {
+            addr32 += ega_plane * 16000; /// 32000 = 320x200x16
+        }
+        return read16arr(VIDEORAM, 0, (addr32-VIDEORAM_START32) % 65536);
+    }
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
+        uint32_t lba = get_logical_lba_for_physical_lba(addr32);
+        if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
+            return psram_read16(&psram_spi, lba);
+        }
+    }
+#endif
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            return psram_read16(&psram_spi, addr32);
+        }
+        return readw86(addr32 - HMA_START_ADDRESS); // FFFF:0010 -> 0000:0000 rolling address space for case A20 is turned off
+    }
+#endif
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < HMA_START_ADDRESS && umb_in_use(addr32)) {
+        // UMB
+        return psram_read16(&psram_spi, addr32);
+    }
+#endif
+#ifdef XMS_HMA
+    if (addr32 >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if (addr32 >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#endif
+        // XMS
+        return psram_read16(&psram_spi, addr32);
+    }
+#endif
+    return read86rom16(addr32);
+}
+
+INLINE uint8_t read86sdcard(uint32_t addr32) {
+    if (addr32 < RAM_PAGE_SIZE) {
+        // First page block fast access
+        return RAM[addr32];
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional
+        return ram_page_read(addr32);
+    }
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        return read86video_ram(addr32);
+    }
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
         uint32_t lba = get_logical_lba_for_physical_lba(addr32);
         if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
             return ram_page_read(lba);
         }
     }
 #endif
-    if ((addr32 >= 0xB8000UL) && (addr32 < 0xC0000UL)) {
-        // video RAM range
-        addr32 -= 0xB8000UL;
-        return VRAM[addr32]; //
-    }
-    if ((addr32 >= 0xD0000UL) && (addr32 < 0xD8000UL)) {
-        // NE2000
-        addr32 -= 0xCC000UL; // TODO: why?
-    }
-    else if ((addr32 >= 0xF6000UL) && (addr32 < 0xFA000UL)) {
-        // IBM BASIC ROM LOW
-        addr32 -= 0xF6000UL;
-        return BASICL[addr32];
-    }
-    else if ((addr32 >= 0xFA000UL) && (addr32 < 0xFE000UL)) {
-        // IBM BASIC ROM HIGH
-        addr32 -= 0xFA000UL;
-        return BASICH[addr32];
-    }
-    else if (addr32 >= 0x100000UL && addr32 < (ON_BOARD_RAM_KB << 10)) { // XMS
-#if SD_CARD_SWAP
-        if (get_a20_enabled()) {
-            return PSRAM_AVAILABLE ? psram_read8(&psram_spi, addr32) : ram_page_read(addr32);
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            //char tmp[40]; sprintf(tmp, "HMA: %08Xh v: %02Xh", addr32, ram_page_read(addr32)); logMsg(tmp);
+            return ram_page_read(addr32);
         }
-        return read86(addr32 - 0x100000UL); // FFFF:0010 -> 0000:0000 rolling address space for case A20 is turned off
-#endif
-    }
-#if PICO_ON_DEVICE
-    if (PSRAM_AVAILABLE) { // XMS no sd-card swap
-        if (get_a20_enabled()) {
-            return psram_read8(&psram_spi, addr32);
-        }
-        return read86(addr32 - 0x100000UL); // FFFF:0010 -> 0000:0000 rolling address space for case A20 is turned off
+        //char tmp[40]; sprintf(tmp, "con: %08Xh v: %02Xh", addr32, read86(addr32 - 0x100000UL)); logMsg(tmp);
+        return read86(addr32 - HMA_START_ADDRESS); // FFFF:0010 -> 0000:0000 rolling address space for case A20 is turned off
     }
 #endif
-    // { char tmp[40]; sprintf(tmp, "ADDR R: 0x%X not found", addr32); logMsg(tmp); }
-    return 0;
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < 0x100000 && umb_in_use(addr32)) {
+        // UMB
+        return ram_page_read(addr32);
+    }
+#endif
+#ifdef XMS_HMA
+    if (addr32 >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if (addr32 >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#endif
+        // XMS
+        return ram_page_read(addr32);
+    }
+#endif
+    return read86rom(addr32);
 }
 
-uint16_t readw86(uint32_t addr32) {
-#if PICO_ON_DEVICE
-    if (PSRAM_AVAILABLE && (addr32 > (RAM_SIZE << 10) && addr32 < (640 << 10))) { // Coventional > RAM todo: w?
-        return psram_read16(&psram_spi, addr32);
+INLINE uint16_t read86sdcard16(uint32_t addr32) {
+    if (addr32 < RAM_PAGE_SIZE) {
+        // First page block fast access
+        return read16arr(RAM, 0, addr32);
     }
-    uint32_t w = (addr32 & 0xFFFFFFFE) == 0; // alligned to 16 bit
-    if (PSRAM_AVAILABLE && w && addr32 >= BASE_X86_KB && addr32 < (ON_BOARD_RAM_KB << 10)) { // XMS
-        if (get_a20_enabled()) {
-           return psram_read16(&psram_spi, addr32);
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional
+        return ram_page_read16(addr32);
+    }
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        if (videomode >= 0x0D && ega_plane) {
+            addr32 += ega_plane * 16000; /// 32000 = 320x200x16
         }
-        return read86(addr32 - BASE_X86_KB);
+        return read16arr(VIDEORAM, 0, (addr32-VIDEORAM_START32) % 65536);
     }
-    if (PSRAM_AVAILABLE && w && (addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
-        uint32_t lba = get_logical_lba_for_physical_lba(addr32);
-        if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
-            return psram_read16(&psram_spi, lba);
-        }
-    }
-#if SD_CARD_SWAP
-    else if (w && (addr32 >> 4) >= PHYSICAL_EMM_SEGMENT && (addr32 >> 4) < PHYSICAL_EMM_SEGMENT_END) { // EMS
+#ifdef EMS_DRIVER
+    if (addr32 >= (PHYSICAL_EMM_SEGMENT << 4) && addr32 < (PHYSICAL_EMM_SEGMENT_END << 4)) {
+        // EMS
         uint32_t lba = get_logical_lba_for_physical_lba(addr32);
         if (lba >= (EMM_LBA_SHIFT_KB << 10)) {
             return ram_page_read16(lba);
         }
     }
-    if (addr32 >= RAM_PAGE_SIZE && addr32 < (640 << 10) - 1 && w) { // Conentional (not first 4k)
-        return ram_page_read16(addr32);
-    }
-    if (w && addr32 >= BASE_X86_KB && addr32 < (ON_BOARD_RAM_KB << 10)) { // XMS
-        if (get_a20_enabled()) {
+#endif
+#ifdef XMS_DRIVER
+#ifdef XMS_HMA
+    if (addr32 >= HMA_START_ADDRESS && addr32 < OUT_OF_HMA_ADDRESS) {
+        // HMA
+        if (a20_line_open) {
+            //char tmp[40]; sprintf(tmp, "HMA: %08Xh v: %04Xh", addr32, ram_page_read16(addr32)); logMsg(tmp);
             return ram_page_read16(addr32);
         }
-        return readw86(addr32 - BASE_X86_KB);
+        //char tmp[40]; sprintf(tmp, "con: %08Xh v: %04Xh", addr32, readw86(addr32 - 0x100000UL)); logMsg(tmp);
+        return readw86(addr32 - HMA_START_ADDRESS); // FFFF:0010 -> 0000:0000 rolling address space for case A20 is turned off
     }
 #endif
+#ifdef XMS_UMB
+    if (addr32 >= UMB_START_ADDRESS && addr32 < HMA_START_ADDRESS && umb_in_use(addr32)) {
+        // UMB #1
+        return ram_page_read16(addr32);
+    }
 #endif
-    return ((uint16_t)read86(addr32) | (uint16_t)(read86(addr32 + 1) << 8));
+#ifdef XMS_HMA
+    if (addr32 >= OUT_OF_HMA_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#else
+    if (addr32 >= HMA_START_ADDRESS && addr32 < (ON_BOARD_RAM_KB << 10)) {
+#endif
+        // XMS
+        return ram_page_read16(addr32);
+    }
+#endif
+    return read86rom16(addr32);
+}
+#endif
+#define __time_critical_func(f) f
+// https://docs.huihoo.com/gnu_linux/own_os/appendix-bios_memory_2.htm
+uint8_t __time_critical_func(read86)(uint32_t addr32) {
+#if PICO_ON_DEVICE
+    if (PSRAM_AVAILABLE) {
+        return read86psram(addr32);
+    }
+    if (SD_CARD_AVAILABLE) {
+        return read86sdcard(addr32);
+    }
+#endif
+    // no special features, cover all existing RAM
+    if (addr32 < RAM_SIZE) {
+        return RAM[addr32];
+    }
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        return read86video_ram(addr32);
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional (no RAM in this space)
+        return 0;
+    }
+    return read86rom(addr32);
 }
 
-void flag_szp8(uint8_t value) {
+uint16_t readw86(uint32_t addr32) {
+    if ((addr32 & 0x00000001) != 0) {
+        // not 16-bit address
+        return ((uint16_t)read86(addr32) | (uint16_t)(read86(addr32 + 1) << 8));
+    }
+#if PICO_ON_DEVICE
+    if (PSRAM_AVAILABLE) {
+        return read86psram16(addr32);
+    }
+    if (SD_CARD_AVAILABLE) {
+        return read86sdcard16(addr32);
+    }
+#endif
+    if (addr32 < RAM_SIZE) {
+        // Conventional (existing)
+        return read16arr(RAM, 0, addr32);
+    }
+    if (addr32 < CONVENTIONAL_END) {
+        // Conventional (no RAM in this space)
+        return 0;
+    }
+    if (addr32 >= VIDEORAM_START32 && addr32 < VIDEORAM_END32) {
+        // video RAM range
+        if (videomode >= 0x0D && ega_plane) {
+            addr32 += ega_plane * 16000; /// 32000 = 320x200x16
+        }
+        return read16arr(VIDEORAM, 0, (addr32-VIDEORAM_START32) % 65536);
+    }
+    return read86rom16(addr32);
+}
+
+INLINE void flag_szp8(uint8_t value) {
     if (!value) {
         zf = 1;
     }
@@ -341,7 +782,7 @@ void flag_szp8(uint8_t value) {
     pf = parity[value]; /* retrieve parity state from lookup table */
 }
 
-void flag_szp16(uint16_t value) {
+INLINE void flag_szp16(uint16_t value) {
     if (!value) {
         zf = 1;
     }
@@ -359,19 +800,19 @@ void flag_szp16(uint16_t value) {
     pf = parity[value & 255]; /* retrieve parity state from lookup table */
 }
 
-void flag_log8(uint8_t value) {
+INLINE void flag_log8(uint8_t value) {
     flag_szp8(value);
     cf = 0;
     of = 0; /* bitwise logic ops always clear carry and overflow */
 }
 
-void flag_log16(uint16_t value) {
+INLINE void flag_log16(uint16_t value) {
     flag_szp16(value);
     cf = 0;
     of = 0; /* bitwise logic ops always clear carry and overflow */
 }
 
-void flag_adc8(uint8_t v1, uint8_t v2, uint8_t v3) {
+INLINE void flag_adc8(uint8_t v1, uint8_t v2, uint8_t v3) {
     /* v1 = destination operand, v2 = source operand, v3 = carry flag */
     uint16_t dst;
 
@@ -399,7 +840,7 @@ void flag_adc8(uint8_t v1, uint8_t v2, uint8_t v3) {
     }
 }
 
-void flag_adc16(uint16_t v1, uint16_t v2, uint16_t v3) {
+INLINE void flag_adc16(uint16_t v1, uint16_t v2, uint16_t v3) {
     uint32_t dst;
 
     dst = (uint32_t)v1 + (uint32_t)v2 + (uint32_t)v3;
@@ -426,7 +867,7 @@ void flag_adc16(uint16_t v1, uint16_t v2, uint16_t v3) {
     }
 }
 
-void flag_add8(uint8_t v1, uint8_t v2) {
+INLINE void flag_add8(uint8_t v1, uint8_t v2) {
     /* v1 = destination operand, v2 = source operand */
     uint16_t dst;
 
@@ -454,7 +895,7 @@ void flag_add8(uint8_t v1, uint8_t v2) {
     }
 }
 
-void flag_add16(uint16_t v1, uint16_t v2) {
+INLINE void flag_add16(uint16_t v1, uint16_t v2) {
     /* v1 = destination operand, v2 = source operand */
     uint32_t dst;
 
@@ -482,7 +923,7 @@ void flag_add16(uint16_t v1, uint16_t v2) {
     }
 }
 
-void flag_sbb8(uint8_t v1, uint8_t v2, uint8_t v3) {
+INLINE void flag_sbb8(uint8_t v1, uint8_t v2, uint8_t v3) {
     /* v1 = destination operand, v2 = source operand, v3 = carry flag */
     uint16_t dst;
 
@@ -511,7 +952,7 @@ void flag_sbb8(uint8_t v1, uint8_t v2, uint8_t v3) {
     }
 }
 
-void flag_sbb16(uint16_t v1, uint16_t v2, uint16_t v3) {
+INLINE void flag_sbb16(uint16_t v1, uint16_t v2, uint16_t v3) {
     /* v1 = destination operand, v2 = source operand, v3 = carry flag */
     uint32_t dst;
 
@@ -540,7 +981,7 @@ void flag_sbb16(uint16_t v1, uint16_t v2, uint16_t v3) {
     }
 }
 
-void flag_sub8(uint8_t v1, uint8_t v2) {
+INLINE void flag_sub8(uint8_t v1, uint8_t v2) {
     /* v1 = destination operand, v2 = source operand */
     uint16_t dst;
 
@@ -568,7 +1009,7 @@ void flag_sub8(uint8_t v1, uint8_t v2) {
     }
 }
 
-void flag_sub16(uint16_t v1, uint16_t v2) {
+INLINE void flag_sub16(uint16_t v1, uint16_t v2) {
     /* v1 = destination operand, v2 = source operand */
     uint32_t dst;
 
@@ -596,77 +1037,77 @@ void flag_sub16(uint16_t v1, uint16_t v2) {
     }
 }
 
-static inline void op_adc8() {
+INLINE void op_adc8() {
     res8 = oper1b + oper2b + cf;
     flag_adc8(oper1b, oper2b, cf);
 }
 
-static inline void op_adc16() {
+INLINE void op_adc16() {
     res16 = oper1 + oper2 + cf;
     flag_adc16(oper1, oper2, cf);
 }
 
-static inline void op_add8() {
+INLINE void op_add8() {
     res8 = oper1b + oper2b;
     flag_add8(oper1b, oper2b);
 }
 
-static inline void op_add16() {
+INLINE void op_add16() {
     res16 = oper1 + oper2;
     flag_add16(oper1, oper2);
 }
 
-static inline void op_and8() {
+INLINE void op_and8() {
     res8 = oper1b & oper2b;
     flag_log8(res8);
 }
 
-static inline void op_and16() {
+INLINE void op_and16() {
     res16 = oper1 & oper2;
     flag_log16(res16);
 }
 
-static inline void op_or8() {
+INLINE void op_or8() {
     res8 = oper1b | oper2b;
     flag_log8(res8);
 }
 
-static inline void op_or16() {
+INLINE void op_or16() {
     res16 = oper1 | oper2;
     flag_log16(res16);
 }
 
-static inline void op_xor8() {
+INLINE void op_xor8() {
     res8 = oper1b ^ oper2b;
     flag_log8(res8);
 }
 
-static inline void op_xor16() {
+INLINE void op_xor16() {
     res16 = oper1 ^ oper2;
     flag_log16(res16);
 }
 
-static inline void op_sub8() {
+INLINE void op_sub8() {
     res8 = oper1b - oper2b;
     flag_sub8(oper1b, oper2b);
 }
 
-static inline void op_sub16() {
+INLINE void op_sub16() {
     res16 = oper1 - oper2;
     flag_sub16(oper1, oper2);
 }
 
-static inline void op_sbb8() {
+INLINE void op_sbb8() {
     res8 = oper1b - (oper2b + cf);
     flag_sbb8(oper1b, oper2b, cf);
 }
 
-static inline void op_sbb16() {
+INLINE void op_sbb16() {
     res16 = oper1 - (oper2 + cf);
     flag_sbb16(oper1, oper2, cf);
 }
 
-static inline void getea(uint8_t rmval) {
+INLINE void getea(uint8_t rmval) {
     uint32_t tempea;
 
     tempea = 0;
@@ -734,12 +1175,12 @@ static inline void getea(uint8_t rmval) {
     ea = (tempea & 0xFFFF) + (useseg << 4);
 }
 
-static inline void push(uint16_t pushval) {
+INLINE void push(uint16_t pushval) {
     CPU_SP = CPU_SP - 2;
     putmem16(CPU_SS, CPU_SP, pushval);
 }
 
-static inline uint16_t pop() {
+INLINE uint16_t pop() {
     uint16_t tempval;
 
     tempval = getmem16(CPU_SS, CPU_SP);
@@ -765,17 +1206,21 @@ void reset86() {
     SDL_AddTimer(timer_period / 1000, ClockTick, "timer");
     SDL_AddTimer(500, BlinkTimer, "blink");
 #endif
+#ifdef EMS_DRIVER
     init_emm();
+#endif
     init8253();
     init8259();
     initsermouse(0x378, 4);
 
-    memset(RAM, 0x0, RAM_SIZE << 10);
-    memset(VRAM, 0x0, VRAM_SIZE << 10);
-#if SD_CARD_SWAP
-    gpio_put(PICO_DEFAULT_LED_PIN, true);
-    for (size_t page = 0; page < RAM_BLOCKS; ++page) {
-        RAM_PAGES[page] = page;
+    memset(RAM, 0x0, RAM_SIZE);
+    memset(VIDEORAM, 0x0, VIDEORAM_SIZE);
+#if PICO_ON_DEVICE
+    if (SD_CARD_AVAILABLE) {
+        gpio_put(PICO_DEFAULT_LED_PIN, true);
+        for (size_t page = 0; page < RAM_BLOCKS; ++page) {
+            RAM_PAGES[page] = page;
+        }
     }
 #endif
 
@@ -789,27 +1234,23 @@ void reset86() {
     videomode = 3;
 }
 
-uint16_t readrm16(uint8_t rmval) {
+INLINE uint16_t readrm16(uint8_t rmval) {
     if (mode < 3) {
         getea(rmval);
         return read86(ea) | ((uint16_t)read86(ea + 1) << 8);
     }
-    else {
-        return getreg16(rmval);
-    }
+    return getreg16(rmval);
 }
 
-uint8_t readrm8(uint8_t rmval) {
+INLINE uint8_t readrm8(uint8_t rmval) {
     if (mode < 3) {
         getea(rmval);
         return read86(ea);
     }
-    else {
-        return getreg8(rmval);
-    }
+    return getreg8(rmval);
 }
 
-void writerm16(uint8_t rmval, uint16_t value) {
+INLINE void writerm16(uint8_t rmval, uint16_t value) {
     if (mode < 3) {
         getea(rmval);
         write86(ea, value & 0xFF);
@@ -820,7 +1261,7 @@ void writerm16(uint8_t rmval, uint16_t value) {
     }
 }
 
-void writerm8(uint8_t rmval, uint8_t value) {
+INLINE void writerm8(uint8_t rmval, uint8_t value) {
     if (mode < 3) {
         getea(rmval);
         write86(ea, value);
@@ -832,553 +1273,36 @@ void writerm8(uint8_t rmval, uint8_t value) {
 
 uint8_t tandy_hack = 0;
 
-static void custom_on_board_emm() {
-    char tmp[90];
-    uint16_t FN = CPU_AH;
-    // sprintf(tmp, "LIM40 FN %Xh", FN); logMsg(tmp);
-    switch(CPU_AH) { // EMM LIM 4.0
-    // The Get Status function returns a status code indicating whether the
-    // memory manager is present and the hardware is working correctly.
-    case 0x40: {
-        CPU_AX = 0;
-        logMsg("LIM40 FN 40h status: 0");
-        zf = 0;
-        return;
-    }
-    // The Get Page Frame Address function returns the segment address where
-    // the page frame is located.
-    case 0x41: {
-        CPU_BX = emm_conventional_segment(); // page frame segment address
-        sprintf(tmp, "LIM40 FN %Xh -> 0x%X (page frame segment)", FN, CPU_BX); logMsg(tmp);
-        CPU_AX = 0;
-        zf = 0;
-        return;
-    }
-    // The Get Unallocated Page Count function returns the number of
-    // unallocated pages and the total number of expanded memory pages.
-    case 0x42: {
-        CPU_BX = unallocated_emm_pages();
-        CPU_DX = total_emm_pages();
-        sprintf(tmp, "LIM40 FN %Xh -> %d free of %d EMM pages", FN, CPU_BX, CPU_DX); logMsg(tmp);
-        CPU_AX = 0;
-        zf = 0;
-        return;
-    }
-    // The Allocate Pages function allocates the number of pages requested
-    // and assigns a unique EMM handle to these pages. The EMM handle owns
-    // these pages until the application deallocates them.
-    case 0x43: {
-        CPU_DX = allocate_emm_pages(CPU_BX, &CPU_AX);
-        sprintf(tmp, "LIM40 FN %Xh err: %Xh alloc(%d pages); handler: %d", FN, CPU_AH, CPU_BX, CPU_DX); logMsg(tmp);
-        if (CPU_AX) zf = 1; else zf = 0;
-        return;
-    }
-    // The Map/Unmap Handle Page function maps a logical page at a specific
-    // physical page anywhere in the mappable regions of system memory.
-    case 0x44: {
-        // AL = physical_page_number
-        // BX = logical_page_number, if FFFFh, the physical page specified in AL will be unmapped
-        // DX = emm_handle
-        uint8_t AL = CPU_AL;
-        CPU_AX = map_unmap_emm_page(CPU_AL, CPU_BX, CPU_DX);
-        sprintf(tmp, "LIM40 FN %Xh res: phys page %d was mapped to %d logical for %d EMM handler",
-                      FN, AL, CPU_BX, CPU_DX); logMsg(tmp);
-        if (CPU_AX) zf = 1; else zf = 0;
-        return;
-    }
-    // Deallocate Pages deallocates the logical pages currently allocated to an EMM handle.
-    case 0x45: {
-        uint16_t emm_handle = CPU_DX;
-        CPU_AX = deallocate_emm_pages(emm_handle);
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh - EMM handler %d dealloc", FN, CPU_AX, emm_handle); logMsg(tmp);
-        if (CPU_AX) zf = 1; else zf = 0;
-        return;
-    }
-    // The Get Version function returns the version number of the memory manager software.
-    case 0x46: {
-        /*
-                                     0100 0000
-                                       /   \
-                                      4  .  0
-        */
-        CPU_AL = 0b01000000; // 4.0
-        logMsg("LIM40 FN 46h res: 4.0");
-        CPU_AH = 0; zf = 0;
-        return;
-    }
-    // Save Page Map saves the contents of the page mapping registers on all
-    // expanded memory boards in an internal save area.
-    case 0x47: {
-        CPU_AX = save_emm_mapping(CPU_DX);
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh (save mapping for %Xh)", FN, CPU_AX, CPU_DX); logMsg(tmp);
-        if (CPU_AX) zf = 1; else zf = 0;
-        return;
-    }
-    // The Restore Page Map function restores the page mapping register
-    // contents on the expanded memory boards for a particular EMM handle.
-    // This function lets your program restore the contents of the mapping
-    // registers its EMM handle saved.
-    case 0x48: {
-        logMsg("Restore Page Map - not implemented - nothing to do");
-        CPU_AX = restore_emm_mapping(CPU_DX);
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh (restore mapping for %Xh)", FN, CPU_AX, CPU_DX); logMsg(tmp);
-        if (CPU_AX) zf = 1; else zf = 0;
-        return;
-    }
-    // The Get Handle Count function returns the number of open EMM handles
-    // (including the operating system handle 0) in the system.
-    case 0x4B: {
-        CPU_BX = total_open_emm_handles();
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh - total_emm_handlers", FN, CPU_BX); logMsg(tmp);
-        CPU_AX = 0; zf = 0;
-        return;
-    }
-    // The Get Handle Pages function returns the number of pages allocated to
-    // a specific EMM handle.
-    case 0x4C: {
-        CPU_BX = get_emm_handle_pages(CPU_DX, &CPU_AX);
-        sprintf(tmp, "LIM40 FN %Xh handler: %d; res: %Xh; pages handled: %d", FN, CPU_DX, CPU_AX, CPU_BX); logMsg(tmp);
-        if (CPU_AX) zf = 1; else zf = 0;
-        return;
-    }
-    // The Get All Handle Pages function returns an array of the open emm
-    // handles and the number of pages allocated to each one.
-    case 0x4D: {
-        // ES:DI = pointer to handle_page
-        uint32_t addr32 = ((uint32_t)CPU_ES << 4) + CPU_DI;
-        CPU_BX = get_all_emm_handle_pages(addr32);
-        sprintf(tmp, "LIM40 FN %Xh all_handlers: %Xh (pages)", FN, CPU_BX); logMsg(tmp);
-        CPU_AX = 0; zf = 0;
-        return;
-    }
-    case 0x4E:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        // The Get Page Map subfunction saves the mapping context for all
-        // mappable memory regions (conventional and expanded) by copying the
-        // contents of the mapping registers from each expanded memory board to a
-        // destination array.
-        case 0x00: {
-            // ES:DI = dest_page_map
-            uint32_t addr32 = ((uint32_t)CPU_ES << 4) + CPU_DI;
-            get_emm_pages_map(addr32);
-            sprintf(tmp, "LIM40 FN %Xh emm pages: %Xh done", FN, CPU_AX); logMsg(tmp);
-            CPU_AX = 0; zf = 0;
-            return;
-        }
-        // The Set Page Map subfunction restores the mapping context for all
-        // mappable memory regions (conventional and expanded) by copying the
-        // contents of a source array into the mapping registers on each expanded
-        // memory board in the system.
-        case 0x01: {
-            // DS:SI = source_page_map
-            uint32_t addr32 = ((uint32_t)CPU_DS << 4) + CPU_SI;
-            set_emm_pages_map(addr32);
-            sprintf(tmp, "LIM40 FN %Xh (save emm) done", FN); logMsg(tmp);
-            CPU_AX = 0; zf = 0;
-            return;
-        }
-        // The Get & Set subfunction simultaneously saves a current mapping
-        // context and restores a previous mapping context for all mappable
-        // memory regions (both conventional and expanded).
-        case 0x02: {
-            // ES:DI = dest_page_map
-            // DS:SI = source_page_map
-            get_emm_pages_map(((uint32_t)CPU_ES << 4) + CPU_DI);
-            set_emm_pages_map(((uint32_t)CPU_DS << 4) + CPU_SI);
-            sprintf(tmp, "LIM40 FN %Xh (get/save) done", FN); logMsg(tmp);
-            CPU_AX = 0; zf = 0;
-            return;
-        }
-        // The Get Size of Page Map Save Array subfunction returns the storage
-        // requirements for the array passed by the other three subfunctions.
-        // This subfunction doesn't require an EMM handle.
-        case 0x03: {
-            CPU_AX = get_emm_pages_map_size();
-            sprintf(tmp, "LIM40 FN %Xh emm pages size: %Xh", FN, CPU_AX); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-    }
-    case 0x4F:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        // The Get Partial Page Map subfunction saves a partial mapping context
-        // for specific mappable memory regions in a system.
-        case 0x00: {
-            // DS:SI = partial_page_map
-            // ES:DI = dest_array
-            CPU_AX = get_partial_emm_page_map((CPU_DS << 4) + CPU_SI, (CPU_ES << 4) + CPU_DI);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_partial_emm_page_map (w/a)", FN, CPU_AH); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-        case 0x01: {
-            // DS:SI = source_array
-            CPU_AX = set_partial_emm_page_map((CPU_DS << 4) + CPU_SI);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh set_partial_emm_page_map (w/a)", FN, CPU_AH); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-        // The Return Size subfunction returns the storage requirements for the
-        // array passed by the other two subfunctions.  This subfunction doesn't
-        // require an EMM handle.
-        case 0x03: {
-            // BX = number of pages in the partial array
-            CPU_AX = get_emm_pages_map_size(); // W/A
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_emm_pages_map_size (w/a)", FN, CPU_AX); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-    }
-    case 0x50:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        // MAPPING AND UNMAPPING MULTIPLE PAGES
-        case 0x00: {
-            uint16_t handle = CPU_DX;
-            uint16_t log_to_phys_map_len = CPU_CX;
-            uint32_t log_to_phys_map = ((uint32_t)CPU_DS << 4) + CPU_SI;
-            CPU_AX = map_unmap_emm_pages(handle, log_to_phys_map_len, log_to_phys_map);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh map_unmap_emm_pages(%d, %d, %Xh)",
-                    FN, CPU_AX, handle, log_to_phys_map_len, log_to_phys_map); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-        // MAP/UNMAP MULTIPLE HANDLE PAGES (by physical segments)
-        case 0x01: {
-            uint16_t handle = CPU_DX;
-            uint16_t log_to_segment_map_len = CPU_CX;
-            uint32_t log_to_segment_map = ((uint32_t)CPU_DS << 4) + CPU_SI;
-            CPU_AX = map_unmap_emm_seg_pages(handle, log_to_segment_map_len, log_to_segment_map);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh map_unmap_emm_seg_pages(%d, %d, %Xh)",
-                    FN, CPU_AX, handle, log_to_segment_map_len, log_to_segment_map); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-    }
-    // REALLOCATE PAGES
-    case 0x51: {
-        CPU_AX = reallocate_emm_pages(CPU_DX, CPU_BX);
-        sprintf(tmp, "LIM40 FN %Xh err: %Xh realloc(%d pages); handler: %d", FN, CPU_AH, CPU_BX, CPU_DX); logMsg(tmp);
-        if (CPU_AX) zf = 1; else zf = 0;
-        return;
-    }
-    // Optional: set handler attributes
-    case 0x52: {
-        sprintf(tmp, "LIM40 FN %Xh err: 91h Optional: set handler attributes (not implemented)", FN); logMsg(tmp);
-        CPU_AX = 0x9100; // not supported
-        zf = 1;
-        return;
-    }
-    case 0x53:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        // GET HANDLE NAME 
-        case 0x00: {
-            uint16_t handle = CPU_DX;
-            uint32_t handle_name = ((uint32_t)CPU_ES << 4) + CPU_DI;
-            CPU_AX = get_handle_name(handle, handle_name);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_handle_name(%d, %Xh)",
-                    FN, CPU_AX, handle, handle_name); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-        // SET HANDLE NAME
-        case 0x01: {
-            uint16_t handle = CPU_DX;
-            uint32_t handle_name = ((uint32_t)CPU_DS << 4) + CPU_SI;
-            CPU_AX = set_handle_name(handle, handle_name);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_handle_name(%d, %Xh)",
-                    FN, CPU_AX, handle, handle_name); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-    }
-    case 0x54:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        // GET HANDLE DIRECTORY
-        case 0x00: {
-            uint32_t handle_dir_struct = ((uint32_t)CPU_ES << 4) + CPU_DI;
-            CPU_AX = get_handle_dir(handle_dir_struct);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh handle_dir_struct(%Xh)", FN, CPU_AX, handle_dir_struct); logMsg(tmp);
-            if (CPU_AH) zf = 1; else zf = 0;
-            return;
-        }
-        // SEARCH FOR NAMED HANDLE
-        case 0x01: {
-            uint32_t handle_name = ((uint32_t)CPU_ES << 4) + CPU_DI;
-            CPU_DX = lookup_handle_dir(handle_name , &CPU_AX);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh handle: %d lookup_handle_dir(%Xh)", FN, CPU_AH, CPU_DX, handle_name); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-        // GET TOTAL HANDLES
-        case 0x02: {
-            CPU_BX = MAX_EMM_HANDLERS;
-            sprintf(tmp, "LIM40 FN %Xh MAX_EMM_HANDLERS: %d", FN, CPU_BX); logMsg(tmp);
-            CPU_AX = 0; zf = 0;
-            return;
-        }
-        // TODO: 
-    }
-    // ALTER PAGE MAP & JUMP
-    case 0x55: {
-        uint8_t page_number_segment_selector = CPU_AL;
-        uint16_t handle = CPU_DX;
-        uint32_t map_and_jump = ((uint32_t)CPU_DS << 4) + CPU_SI;
-        CPU_AH = map_emm_and_jump(page_number_segment_selector, handle, map_and_jump);
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh handle: %d page_number_segment_selector: %d (not implemented)",
-                      FN, CPU_AH, CPU_DX, page_number_segment_selector); logMsg(tmp);
-        if (CPU_AH) zf = 1; else zf = 0;
-        return;
-    }
-    // ALTER PAGE MAP & CALL
-    case 0x56: {
-        uint8_t page_number_segment_selector = CPU_AL;
-        uint16_t handle = CPU_DX;
-        uint32_t map_and_call = ((uint32_t)CPU_DS << 4) + CPU_SI;
-        CPU_AH = map_emm_and_call(page_number_segment_selector, handle, map_and_call);
-        sprintf(tmp, "LIM40 FN %Xh res: %Xh handle: %d page_number_segment_selector: %d (not implemented)",
-                      FN, CPU_AH, CPU_DX, page_number_segment_selector); logMsg(tmp);
-        if (CPU_AH) zf = 1; else zf = 0;
-        return;
-    }
-    // MOVE/EXCHANGE MEMORY REGION
-    case 0x57: {
-        CPU_AH = 0x86;
-        sprintf(tmp, "LIM40 FN %Xh MOVE/EXCHANGE MEMORY REGION (not implemented)", FN); logMsg(tmp);
-        if (CPU_AH) zf = 1; else zf = 0;
-        return;
-    }
-    case 0x58:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        // GET MAPPABLE PHYSICAL ADDRESS ARRAY
-        case 0x00: {
-            uint32_t mappable_phys_page = ((uint32_t)CPU_ES << 4) + CPU_DI;
-            CPU_AX = get_mappable_physical_array(mappable_phys_page);
-            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_mappable_physical_array(%Xh)",
-                    FN, CPU_AX, mappable_phys_page); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-        // GET MAPPABLE PHYSICAL ADDRESS ARRAY ENTRIES
-        case 0x01: {
-            CPU_CX = get_mappable_phys_pages();
-            sprintf(tmp, "LIM40 FN %Xh get_mappable_phys_pages: %d", FN, CPU_CX); logMsg(tmp);
-            CPU_AX = 0; zf = 0;
-            return;
-        }
-    }
-    case 0x59:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        // GET HARDWARE CONFIGURATION ARRAY
-        case 0x00: {
-            uint32_t hardware_info = ((uint32_t)CPU_ES << 4) + CPU_DI;
-            get_hardvare_emm_info(hardware_info);
-            sprintf(tmp, "LIM40 FN %Xh GET HARDWARE CONFIGURATION ARRAY", FN); logMsg(tmp);
-            CPU_AX = 0; zf = 0;
-            return;
-        }
-        // GET UNALLOCATED RAW PAGE COUNT
-        case 0x01: {
-            CPU_BX = unallocated_emm_pages();
-            CPU_DX = total_emm_pages();
-            sprintf(tmp, "LIM40 FN %Xh %d of %d free pages", FN, CPU_BX, CPU_DX); logMsg(tmp);
-            CPU_AX = 0; zf = 0;
-            return;
-        }
-    }
-    case 0x5A:
-        FN = CPU_AX;
-        switch(CPU_AL) {
-        //  ALLOCATE STANDARD PAGES
-        case 0x00: {
-            CPU_AX = allocate_emm_pages_sys(CPU_BX, CPU_DX);
-            sprintf(tmp, "LIM40 FN %Xh (%d, %d) allocate_emm_pages_sys res: %Xh", FN, CPU_BX, CPU_DX, CPU_AX); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-        //  ALLOCATE STANDARD/RAW
-        case 0x01: {
-            CPU_AX = allocate_emm_raw_pages(CPU_BX);
-            sprintf(tmp, "LIM40 FN %Xh (%d, %d) allocate_emm_raw_pages res: %Xh (not yet)", FN, CPU_BX, CPU_DX, CPU_AX); logMsg(tmp);
-            if (CPU_AX) zf = 1; else zf = 0;
-            return;
-        }
-    }
-    case 0x5B: {
-        CPU_AH = 0x86;
-        sprintf(tmp, "LIM40 FN %Xh ALTERNATE MAP REGISTER SET (not implemented)", FN); logMsg(tmp);
-        if (CPU_AH) zf = 1; else zf = 0;
-        return;
-    }
-    case 0x5C: {
-        CPU_AH = 0x86;
-        sprintf(tmp, "LIM40 FN %Xh PREPARE EXPANDED MEMORY HARDWARE FOR WARM BOOT (not implemented)", FN); logMsg(tmp);
-        if (CPU_AH) zf = 1; else zf = 0;
-        return;
-    }
-    case 0x5D: {
-        CPU_AH = 0x86;
-        sprintf(tmp, "LIM40 FN %Xh ENABLE/DISABLE OS/E FUNCTION SET (not implemented)", FN); logMsg(tmp);
-        if (CPU_AH) zf = 1; else zf = 0;
-        return;
-    }
-    default:
-        sprintf(tmp, "LIM40 FN %Xh (not implemented)", CPU_AX); logMsg(tmp);
-    }
-}
-
-void intcall86(uint8_t intnum) {
+INLINE void intcall86(uint8_t intnum) {
+    uint32_t tempcalc, memloc, n;
     switch (intnum) {
+#ifdef EMS_DRIVER
         case 0x67: {
             custom_on_board_emm();
             return;
         }
-        case 0x15:
-            switch(CPU_AH) {/*
-                case 0x24: 
-                    switch(CPU_AL) {
-                        case 0x00:
-                            set_a20(1);
-                            cf = 0; CPU_AH = 0;
-                            logMsg("INT15! 2400 turn on A20_ENABLE_BIT");
-                            return;
-                        case 0x01:
-                            set_a20(0);
-                            cf = 0; CPU_AH = 0;
-                            logMsg("INT15! 2401 turn off A20_ENABLE_BIT");
-                            return;
-                        case 0x02:
-                            CPU_AL = get_a20_enabled();
-                            cf = 0; CPU_AH = 0; {
-                                char tmp[80]; sprintf(tmp, "INT15! 2402 AL: 0x%X (A20 line)", CPU_AL); logMsg(tmp);
-                            }
-                            return;
-                        case 0x03:
-                            CPU_BX = 0b10;
-                            CPU_AH = 0;
-                            cf = 0; {
-                                char tmp[80]; sprintf(tmp, "INT15! 2403 BX: %xh", CPU_BX); logMsg(tmp);
-                            }
-                            return;
-                    }
-                    break;
-                case 0x4F:
-                    CPU_AH = 0x86;
-                    cf = 1;
-                    return;
-                case 0x52: // removable media eject
-                    // TODO:
-                    CPU_AH = 0;
-                    cf = 0;
-                    return;
-                case 0x53: // APM
-                    // TODO:
-                    break;
-                case 0x5F: // VGA hooks
-                case 0x7F:
-                    // TODO:
-                    break;
-                case 0x83: // real-time clock
-                case 0x86:
-                    // TODO:
-                    break;
-                case 0x87: { // Memory block move EMS
-                        uint16_t words_to_move = CPU_CX;
-                        uint32_t gdt_far = (CPU_ES << 4) + CPU_SI;
-                        i15_87h(words_to_move, gdt_far);
-                    }
-                    CPU_AH = 0;
-                    cf = 0;
-                    return;*/
-                case 0x88: // memory info
-                    if (ON_BOARD_RAM_KB > 64 * 1024) {
-                        CPU_AX = 63 * 1024;
-                    } else {
-                        CPU_AX = ON_BOARD_RAM_KB - 1024;
-                    }
-                    cf = 0;
-                    return;
-                /*case 0x89: { // switch to protected mode 286+
-                        uint32_t gdt_far = (CPU_ES << 4) + CPU_SI;
-                        char tmp[80]; sprintf(tmp, "INT15h FN 89h IDT1: %d IDT2: %d GDT: %Xh",
-                                                    CPU_BH, CPU_BL, gdt_far); logMsg(tmp);
-                        i15_89h(CPU_BH, CPU_BL, gdt_far);
-                    }
-                    CPU_AH = 0;
-                    cf = 0;
-                    return;
-                
-                case 0x90: // Device busy interrupt.  Called by Int 16h when no key available
-                    break;
-                case 0x91: // Interrupt complete.  Called by Int 16h when key becomes available
-                    break;
-                case 0xC0: // to be processed by BIOS
-                    // CPU_ES = 0xF000; // BIOS segment
-                    // CPU_BX = 0xE6f5; // BIOS config table
-                    break;*/
-                case 0xE8:
-                    switch(CPU_AL) {
-                        case 0x01:
-#if ON_BOARD_RAM_KB > 16*1024
-                            CPU_CX = 1024 * 15; // 15MB
-                            CPU_DX = (uint16_t)(ON_BOARD_RAM_KB - 16 * 1024) / 64;
-#else
-                            CPU_CX = ON_BOARD_RAM_KB - 1;
-                            CPU_DX = 0;
 #endif
-                            CPU_AX = CPU_CX;
-                            CPU_BX = CPU_DX;
-                            cf = 0;
-                            return; /*
-                        case 0x20: {
-                                // ES:DI - destination for the table
-                                int count = e820_count;
-                                if (CPU_DX != 0x534D4150 || CPU_BX >= count || CPU_CX < sizeof(e820_list[0])) {
-                                    CPU_AH = 0x86;
-                                    cf = 1;
-                                    logMsg("INT15! E820 failed");
-                                    return;
-                                }
-                                memcpy_far(CPU_ES,
-                                           (void*)(CPU_DI + 0),
-                                           get_global_seg(),
-                                           &e820_list[CPU_BX],
-                                           sizeof(e820_list[0])
-                                );
-                                if (CPU_BX == count - 1)
-                                    CPU_BX = 0;
-                                else
-                                    CPU_BX++;
-                                CPU_AX = 0x534D4150;
-                                CPU_CX = sizeof(e820_list[0]);
-                                char tmp[80]; sprintf(tmp, "INT15! E820 CX: 0x%X; BX: 0x%X", CPU_CX, CPU_BX); logMsg(tmp);
-                                cf = 0;
-                                return;
-                            }*/
-                        default:
-                            break;
-                    }
-                    break;
-                default: {
-                    // char tmp[80]; sprintf(tmp, "INT 15h CPU_AH: 0x%X; CPU_AL: 0x%X", CPU_AH, CPU_AL); logMsg(tmp);
-                }
+#ifdef XMS_DRIVER
+        case 0x2F: {
+            if (INT_2Fh()) {
+                return;
             }
             break;
+        }
+        case 0x15:
+            if (INT_15h()) {
+                return;
+            }
+            break;
+#endif
         case 0x10:
             //printf("INT 10h CPU_AH: 0x%x CPU_AL: 0x%x\r\n", CPU_AH, CPU_AL);
             switch (CPU_AH) {
-
                 case 0x0f:
-                        if (videomode < 8) break;
-                        CPU_AL = videomode;
-                        CPU_AH = 80;
-                        CPU_BH = 0;
+                    if (videomode < 8) break;
+                    CPU_AL = videomode;
+                    CPU_AH = 80;
+                    CPU_BH = 0;
                     return;
                 case 0x00:
                     videomode = CPU_AL & 0x7F;
@@ -1391,28 +1315,49 @@ void intcall86(uint8_t intnum) {
                 //if (videomode >= 8) CPU_AL = 4;
 
                 // FIXME!!
-                    RAM[0x449] = videomode;
+                    ega_plane = 0;
+                    RAM[0x449] = CPU_AL;
                     RAM[0x44A] = (uint8_t)videomode <= 2 ? 40 : 80;
                     RAM[0x44B] = 0;
                     RAM[0x484] = (uint8_t)(25 - 1);
-#ifdef EGA
                     if ((CPU_AL & 0x80) == 0x00) {
-                        memset(VRAM, 0x0, sizeof VRAM);
+                        memset(VIDEORAM, 0x0, sizeof VIDEORAM);
                     }
-#endif
                 // http://www.techhelpmanual.com/114-video_modes.html
                 // http://www.techhelpmanual.com/89-video_memory_layouts.html
-                char tmp[40];
-                sprintf(tmp, "VBIOS: Mode 0x%x (0x%x)\r\n", CPU_AX, videomode);
-                logMsg(tmp);
+                    char tmp[40];
+                    sprintf(tmp, "VBIOS: Mode 0x%x (0x%x)", CPU_AX, videomode);
+                    logMsg(tmp);
 #if PICO_ON_DEVICE
+                    if (videomode <= 0xd) {
+                        graphics_set_buffer(VIDEORAM + 32768, 320, 200);
+                    }
                     switch (videomode) {
                         case 0:
-                        case 1:
+                            for (int i = 0; i < 16; i++) {
+                                graphics_set_palette(i, cga_grayscale_palette[i]);
+                            }
                             graphics_set_mode(TEXTMODE_40x30);
                             break;
+                        case 1:
+                            for (int i = 0; i < 16; i++) {
+                                graphics_set_palette(i, cga_palette[i]);
+                            }
+                            graphics_set_mode(TEXTMODE_40x30);
+                            break;
+
+
                         case 2:
+                            for (int i = 0; i < 16; i++) {
+                                graphics_set_palette(i, cga_grayscale_palette[i]);
+                            }
+                            graphics_set_mode(TEXTMODE_80x30);
+                            break;
                         case 3:
+                        case 7:
+                        for (int i = 0; i < 16; i++) {
+                            graphics_set_palette(i, cga_palette[i]);
+                        }
                             graphics_set_mode(TEXTMODE_80x30);
                             break;
                         case 4:
@@ -1441,10 +1386,63 @@ void intcall86(uint8_t intnum) {
                             }
                             graphics_set_mode(TGA_320x200x16);
                             break;
+                        case 0x0d:
+                        case 0x0e:
+                            graphics_set_buffer(VIDEORAM, 320, 200);
+                        for (int i = 0; i < 256; i++) {
+                            graphics_set_palette(i, vga_palette[i]);
+                        }
+                        graphics_set_mode(EGA_320x200x16);
+                        //port3D8 = port3D8 & 0xFE;
+                        break;
+                        case 0x13:
+                            graphics_set_buffer(VIDEORAM, 320, 200);
+                            for (int i = 0; i < 256; i++) {
+                                graphics_set_palette(i, vga_palette[i]);
+                            }
+                            graphics_set_mode(VGA_320x200x256);
+                            port3D8 = port3D8 & 0xFE;
+                            break;
                     }
+
 #endif
                 // Установить видеорежим
                     break;
+                case 0x10: //VGA DAC functions
+                    if (videomode >= 0x0d) return;
+                    printf("palette manipulation\r\n");
+                    switch (CPU_AL) {
+                        case 0x10: //set individual DAC register
+                            vga_palette[CPU_BX] = rgb((CPU_DH & 63) << 2, (CPU_CH & 63) << 2, (CPU_CL & 63) << 2);
+#if PICO_ON_DEVICE
+                        graphics_set_palette(CPU_BX, vga_palette[CPU_BX]);
+#endif
+                            break;
+                        case 0x12: //set block of DAC registers
+                            memloc = CPU_ES * 16 + CPU_DX;
+                            for (n = CPU_BX; n < (uint32_t)(CPU_BX + CPU_CX); n++) {
+                                vga_palette[n] = rgb(read86(memloc) << 2, read86(memloc + 1) << 2,
+                                                     read86(memloc + 2) << 2);
+#if PICO_ON_DEVICE
+                                graphics_set_palette(n, vga_palette[n]);
+#endif
+                                memloc += 3;
+                            }
+                    }
+                    break;
+                /*case 0x12:
+                  break;
+                    CPU_BH = 0; // default BIOS setup (0=color; 1=monochrome)
+                    CPU_BL = 0; //mem size code (0=64K; 1=128K; 2=192K; 3=256K)
+                //(Note: if BL>4, then this is not an EGA BIOS)
+                    CPU_CH = 0; //feature bits (values of those RCA connectors)
+                    CPU_CL = 0; //switch settings
+                    return;*/
+                case 0x1A: //get display combination code (ps, vga/mcga)
+                    CPU_AL = 0x1A;
+                    CPU_BL = 0x08;
+                    CPU_BH = 0x00;
+                    return;
                 /*
                                 case 0x1A: //get display combination code (ps, vga/mcga)
                                     CPU_AL = 0x1A;
@@ -1582,11 +1580,11 @@ void intcall86(uint8_t intnum) {
             insertdisk(128, 0, NULL, "\\XT\\hdd.img");
             keyboard_send(0xFF);
 #else
-            //insertdisk(0, sizeof FDD0, FDD0, NULL);
-            if (1 == insertdisk(0, 0, NULL, "fdd0.img") ) {
-                insertdisk(0, fdd0_sz(), fdd0_rom(), NULL);
+            insertdisk(0, sizeof FDD0, FDD0, NULL);
+            if (1 == insertdisk(0, 0, NULL, "fdd0.img")) {
+                //insertdisk(0, fdd0_sz(), fdd0_rom(), NULL);
             }
-            insertdisk(1, fdd1_sz(), fdd1_rom(), NULL);
+        //insertdisk(1, fdd1_sz(), fdd1_rom(), NULL);
             insertdisk(128, 0, NULL, "hdd.img");
 #endif
             break;
@@ -1605,7 +1603,7 @@ void intcall86(uint8_t intnum) {
 }
 
 
-uint8_t op_grp2_8(uint8_t cnt) {
+INLINE uint8_t op_grp2_8(uint8_t cnt) {
     uint16_t s;
     uint16_t shift;
     uint16_t oldcf;
@@ -1731,7 +1729,7 @@ uint8_t op_grp2_8(uint8_t cnt) {
     return s & 0xFF;
 }
 
-uint16_t op_grp2_16(uint8_t cnt) {
+INLINE uint16_t op_grp2_16(uint8_t cnt) {
     uint32_t s;
     uint32_t shift;
     uint32_t oldcf;
@@ -1854,7 +1852,7 @@ uint16_t op_grp2_16(uint8_t cnt) {
     return (uint16_t)s & 0xFFFF;
 }
 
-void op_div8(uint16_t valdiv, uint8_t divisor) {
+INLINE void op_div8(uint16_t valdiv, uint8_t divisor) {
     if (divisor == 0) {
         intcall86(0);
         return;
@@ -1869,7 +1867,7 @@ void op_div8(uint16_t valdiv, uint8_t divisor) {
     CPU_AL = valdiv / (uint16_t)divisor;
 }
 
-void op_idiv8(uint16_t valdiv, uint8_t divisor) {
+INLINE void op_idiv8(uint16_t valdiv, uint8_t divisor) {
     uint16_t s1;
     uint16_t s2;
     uint16_t d1;
@@ -1902,7 +1900,7 @@ void op_idiv8(uint16_t valdiv, uint8_t divisor) {
     CPU_AL = (uint8_t)d1;
 }
 
-void op_grp3_8() {
+INLINE void op_grp3_8() {
     oper1 = signext(oper1b);
     oper2 = signext(oper2b);
     switch (reg) {
@@ -2376,13 +2374,13 @@ extern void ps2poll();
 
 #endif
 
-void __inline exec86(uint32_t execloops) {
+void exec86(uint32_t execloops) {
     uint8_t docontinue;
     static uint16_t firstip;
     static uint16_t trap_toggle = 0;
 
     //counterticks = (uint64_t) ( (double) timerfreq / (double) 65536.0);
-    tickssource();
+    //tickssource();
     for (uint32_t loopcount = 0; loopcount < execloops; loopcount++) {
         //if ((totalexec & 256) == 0)
         if (trap_toggle) {
@@ -2411,7 +2409,18 @@ void __inline exec86(uint32_t execloops) {
             ip = ip & 0xFFFF;
             savecs = CPU_CS;
             saveip = ip;
+#ifdef XMS_DRIVER
+            // W/A-hack: last byte of interrupts table (actually should not be ever used as CS:IP)
+            if (CPU_CS == XMS_FN_CS && ip == XMS_FN_IP) {
+                // hook for XMS
+                opcode = xms_fn(); // always returns RET TODO: far/short ret?
+            }
+            else {
+                opcode = getmem8(CPU_CS, ip);
+            }
+#else
             opcode = getmem8(CPU_CS, ip);
+#endif
             StepIP(1);
 
             switch (opcode) {

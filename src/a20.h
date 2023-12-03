@@ -1,35 +1,42 @@
 #pragma once
 #define PORT_A20 0x92
 #define A20_ENABLE_BIT 0x02
+#ifdef XMS_UMB
+#define UMB_START_ADDRESS 0xC0000ul
+#define UMB_BLOCKS 6
+#define RESERVED_XMS_KB (UMB_BLOCKS * 16 + 64)
+#else
+#define RESERVED_XMS_KB 0
+#endif
+#define HMA_START_ADDRESS 0x100000ul
+#define OUT_OF_HMA_ADDRESS 0x10FFF0ul
+#define BASE_XMS_HANLES_SEG 0x11000ul
+// TODO:
+#if XMS_OVER_HMA_KB
+#define XMS_STATIC_PAGE_KBS 16ul
+#else
+#define XMS_STATIC_PAGE_KBS 0ul
+#endif
+#define XMS_STATIC_PAGE_PHARAGRAPS (XMS_STATIC_PAGE_KBS << 6)
+// last byte of interrupts table (actually should not be ever used as CS:IP)
+#define XMS_FN_CS 0x0000
+#define XMS_FN_IP 0x03FF
 
 #include <stdbool.h>
 #include <inttypes.h>
 #include "emulator.h"
 
-bool    get_a20_enabled();
-void    set_a20_enabled(bool v);
+#ifdef XMS_DRIVER
 
-#define E820_RAM          1
-#define E820_RESERVED     2
-#define E820_ACPI         3
-#define E820_NVS          4
-#define E820_UNUSABLE     5
+bool INT_15h();
+bool umb_in_use(uint32_t addr32);
 
-struct e820entry {
-    uint64_t start;
-    uint64_t size;
-    uint32_t type;
-};
+#ifdef XMS_HMA
+ #define XMS_HMA_KB 64ul
+#else
+ #define XMS_HMA_KB 0
+#endif
 
-void e820_add(uint64_t start, uint64_t size, uint32_t type);
-void e820_remove(uint64_t start, uint64_t size);
-void e820_prepboot(void);
-void i15_87h(uint16_t words_to_move, uint32_t gdt_far);
-void i15_89h(uint8_t IDT1, uint8_t IDT2, uint32_t gdt_far);
-
-// Maximum number of map entries in the e820 map
-#define BUILD_MAX_E820 32
-
-// e820 map storage
-extern struct e820entry e820_list[];
-extern int e820_count;
+uint8_t xms_fn();
+void xmm_reboot();
+#endif

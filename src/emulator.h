@@ -4,6 +4,30 @@
 #pragma once
 #ifndef TINY8086_CPU8086_H
 #define TINY8086_CPU8086_H
+#if PICO_ON_DEVICE
+//#define INLINE __always_inline
+#define INLINE static
+#else
+#define INLINE __forceinline
+#endif
+
+// Settings for max 8MB 0f PSRAM
+#define TOTAL_VIRTUAL_MEMORY_KBS (8ul << 10)
+
+#if XMS_OVER_HMA_KB
+#define ON_BOARD_RAM_KB (1024ul + XMS_OVER_HMA_KB + XMS_HMA_KB + RESERVED_XMS_KB)
+#else
+#define ON_BOARD_RAM_KB (1024ul + XMS_HMA_KB + RESERVED_XMS_KB)
+#endif
+
+#define BASE_X86_KB 1024ul
+#define TOTAL_XMM_KB (ON_BOARD_RAM_KB - BASE_X86_KB)
+
+#ifdef EMS_DRIVER
+#define TOTAL_EMM_KB (TOTAL_VIRTUAL_MEMORY_KBS - ON_BOARD_RAM_KB)
+#else
+#define TOTAL_EMM_KB 0
+#endif
 
 #include <stdint.h>
 #include <stdio.h>
@@ -29,12 +53,17 @@ static FATFS fs;
 #endif
 
 #define BEEPER_PIN 28
-#define VRAM_SIZE 64
+
+#ifdef WIN_EXT_RAM
+#define EXT_RAM_SIZE 32 << 20 // 32Mb
+extern uint8_t EXTRAM[EXT_RAM_SIZE];
+#endif
 
 // TODO: no direct access support (for PC mode)
-extern uint8_t RAM[RAM_SIZE << 10];
-extern uint8_t VRAM[VRAM_SIZE << 10];
+extern uint8_t RAM[RAM_SIZE];
+extern uint8_t VIDEORAM[VIDEORAM_SIZE];
 extern bool PSRAM_AVAILABLE;
+extern bool SD_CARD_AVAILABLE;
 
 #define regax 0
 #define regcx 1
@@ -63,6 +92,7 @@ extern uint8_t tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm
 extern uint8_t videomode;
 extern uint8_t speakerenabled;
 extern int timer_period;
+extern uint8_t ega_plane;
 
 #if PICO_ON_DEVICE
 extern pwm_config config;
@@ -120,7 +150,11 @@ static inline void decodeflagsword(uint16_t x) {
 #define CPU_CH    regs.byteregs[regch]
 #define CPU_DH    regs.byteregs[regdh]
 
+// TODO: remove this trash
+void logMsg(char*);
+
 #define StepIP(x)  ip += x
+
 #define getmem8(x, y) read86(segbase(x) + y)
 #define getmem16(x, y)  readw86(segbase(x) + y)
 #define putmem8(x, y, z)  write86(segbase(x) + y, z)
@@ -162,17 +196,16 @@ extern union _bytewordregs_ {
     uint8_t byteregs[8];
 } regs;
 
-
-
 void diskhandler();
 uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname);
 
+void writew86(uint32_t addr32, uint16_t value);
 void write86(uint32_t addr32, uint8_t value);
+uint16_t readw86(uint32_t addr32);
+uint8_t read86(uint32_t addr32);
+
 void reset86(void);
 void exec86(uint32_t execloops);
-uint8_t read86(uint32_t addr32);
-uint16_t readw86(uint32_t addr32);
-
 
 void portout(uint16_t portnum, uint16_t value);
 uint16_t portin(uint16_t portnum);
@@ -189,7 +222,21 @@ void init8253();
 void out8253(uint16_t portnum, uint8_t value);
 uint8_t in8253(uint16_t portnum);
 
-
+struct dmachan_s {
+    uint32_t page;
+    uint32_t addr;
+    uint32_t reload;
+    uint32_t count;
+    uint8_t direction;
+    uint8_t autoinit;
+    uint8_t writemode;
+    uint8_t masked;
+};
+#ifdef DMA_8237
+uint8_t in8237(uint16_t addr);
+void out8237(uint16_t addr, uint8_t value);
+uint8_t read8237 (uint8_t channel);
+#endif
 uint8_t insermouse ( uint16_t portnum );
 void outsermouse ( uint16_t portnum, uint8_t value );
 void sermouseevent ( uint8_t buttons, int8_t xrel, int8_t yrel );
@@ -199,13 +246,16 @@ void outsoundsource ( uint16_t portnum, uint8_t value );
 uint8_t insoundsource ( uint16_t portnum );
 int16_t tickssource();
 
+extern int16_t	adlibgensample	( void );
+extern uint8_t	inadlib		( uint16_t portnum );
+extern void	initadlib	( uint16_t baseport );
+extern void	outadlib	( uint16_t portnum, uint8_t value );
+extern void	tickadlib	( void );
+
 #if !PICO_ON_DEVICE
 void handleinput(void);
-inline void logMsg(char * str) {
-    printf(str);
-}
+#define logMsg(c) printf("%s\r\n",c);
 #endif
-
 
 extern struct i8259_s {
     uint8_t imr; //mask register
@@ -229,5 +279,11 @@ extern struct i8253_s {
     uint8_t active[3];
     uint16_t counter[3];
 } i8253;
-
+#define rgb(r, g, b) ((r<<16) | (g << 8 ) | b )
+#define rgb1(b, g, r) r | (g<<8) | (b<<16);
+//r<<16) | (g << 8 ) | b )
 #endif //TINY8086_CPU8086_H
+
+void notify_a20_line_state_changed(bool v);
+bool is_a20_line_open();
+void ports_reboot();

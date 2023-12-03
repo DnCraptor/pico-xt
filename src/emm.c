@@ -58,6 +58,8 @@
 #include <string.h>
 #include <stdbool.h>
 
+#ifdef EMS_DRIVER
+
 uint16_t emm_conventional_segment() {
     return PHYSICAL_EMM_SEGMENT;
 }
@@ -138,7 +140,7 @@ uint16_t get_emm_handle_pages(uint16_t emm_handle, uint16_t *err) {
 }
 
 uint32_t get_logical_lba_for_physical_lba(uint32_t physical_lba_addr) {
-    uint16_t physical_page_number = (physical_lba_addr >> 14);
+    uint16_t physical_page_number = (physical_lba_addr >> 14); // >> 10 kb >> 4 16kb
     uint32_t offset_in_the_page = physical_lba_addr - (physical_page_number << 14);
     for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
         const emm_record_t * di = &emm_desc_table[i];
@@ -155,11 +157,20 @@ uint16_t total_emm_pages() {
     return TOTAL_EMM_PAGES;
 }
 
+#ifdef EMS_DEBUG
+static char tmp[85];
+#endif
 uint16_t allocated_emm_pages() {
     uint16_t res = 0;
+#ifdef EMS_DEBUG
+    logMsg("Handler | in use | pages | ALLOCATED");
+#endif
     for (int i = 0; i < MAX_EMM_HANDLERS; ++i) {
         emm_handler_t * h = &handlers[i];
         if (h->handler_in_use) {
+#ifdef EMS_DEBUG
+            sprintf(tmp, "    %03d |      %d | %05d |", i, h->handler_in_use, h->pages_acllocated); logMsg(tmp);
+#endif
             res += h->pages_acllocated;
         }
     }
@@ -190,12 +201,21 @@ uint16_t allocate_emm_pages(uint16_t pages, uint16_t *err) {
           the OS handle.  An application can use Function 21 to find out how
           many handles an EMM supports.
     */
+#ifdef EMS_DEBUG
+    logMsg("Handler | in use | pages | ALLOCATE");
+#endif
     for (int i = 1; i < MAX_EMM_HANDLERS; ++i) {
         emm_handler_t * h = &handlers[i];
+#ifdef EMS_DEBUG
+        sprintf(tmp, "    %03d |      %d | %05d |", i, h->handler_in_use, h->pages_acllocated); logMsg(tmp);
+#endif
         if (!h->handler_in_use) {
             handler = i;
             h->handler_in_use = true;
             h->pages_acllocated = pages;
+#ifdef EMS_DEBUG
+            sprintf(tmp, "res %03d |      %d | %05d |", i, h->handler_in_use, h->pages_acllocated); logMsg(tmp);
+#endif
             break;
         }
     }
@@ -215,6 +235,11 @@ uint16_t reallocate_emm_pages(uint16_t handler, uint16_t pages) {
         return 0x87 << 8; // There aren't enough expanded memory pages present
     }
     if (handlers[handler].pages_acllocated == pages) {
+#ifdef EMS_DEBUG
+        sprintf(tmp, "reallocated %03d | %d | %05d |",
+                      handler, handlers[handler].handler_in_use, handlers[handler].pages_acllocated);
+        logMsg(tmp);
+#endif
         return 0;
     }
     if (handlers[handler].pages_acllocated > pages) {
@@ -222,7 +247,15 @@ uint16_t reallocate_emm_pages(uint16_t handler, uint16_t pages) {
             return 0x88 << 8; // There aren't enough unallocated pages
         }
     }
+#ifdef EMS_DEBUG
+    sprintf(tmp, "reallocate  %03d | %d | %05d |",
+                  handler, handlers[handler].handler_in_use, handlers[handler].pages_acllocated); logMsg(tmp);
+#endif
     handlers[handler].pages_acllocated = pages;
+#ifdef EMS_DEBUG
+    sprintf(tmp, "reallocated %03d | %d | %05d |",
+                  handler, handlers[handler].handler_in_use, handlers[handler].pages_acllocated); logMsg(tmp);
+#endif
     return 0;
 }
 
@@ -235,39 +268,57 @@ uint16_t map_unmap_emm_page(
     uint16_t logical_page_number,
     uint16_t emm_handle
 ) {
-    uint32_t physical_page_lba = phisical_page_2_lba(physical_page_number);
-    if (physical_page_lba >= ((uint32_t)PHYSICAL_EMM_SEGMENT_END << 4)) { // TODO: ensure
-        return 0x88 << 8; // The physical page number is out of the range of allowable
-                          // physical pages.  The program can recover by attempting to
-                          // map into memory at a physical page which is within the
-                          // range of allowable physical pages.
+    if (physical_page_number > PHYSICAL_EMM_PAGES) {
+        return 0x8B00; // physical page is out of the range
     }
+    if (emm_handle >= MAX_EMM_HANDLERS || handlers[emm_handle].handler_in_use == 0) {
+        return 0x8300; // The memory manager couldn't find the EMM handle your program specified.
+    }
+    if (handlers[emm_handle].pages_acllocated < logical_page_number) {
+        return 0x8A00; // Logical page number is grater than allocated to the handle.
+    }
+    uint32_t physical_page_lba = phisical_page_2_lba(physical_page_number);
+#ifdef EMS_DEBUG
+    logMsg("EMM TBL | Handler | Logical page | Physical page | MAP-UNMAP");
+#endif
     if (logical_page_number == 0xFFFF) { // if BX contains logical page number
                                          // FFFFh, the physical page will be unmapped
         for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
             emm_record_t * di = &emm_desc_table[i];
+#ifdef EMS_DEBUG
+            sprintf(tmp, "   %04d |     %02Xh |        %04Xh |         %04Xh |",
+                          i, di->handler, di->logical_page, di->physical_page); logMsg(tmp);
+#endif
             if (di->physical_page == physical_page_number && di->handler == emm_handle) {
                 di->handler = 0xFF;
+#ifdef EMS_DEBUG
+                sprintf(tmp, "r  %04d |     %02Xh |        %04Xh |         %04Xh |",
+                          i, di->handler, di->logical_page, di->physical_page); logMsg(tmp);
+#endif
             }
         }
         return 0;
     }
-    if (logical_page_number >= total_emm_pages()) {
-        return 0x8A << 8; // The logical page is out of the range of logical pages which
-                          // are allocated to the EMM handle. This status is also
-                          // returned if a program attempts map a logical page when no
-                          // logical pages are allocated to the handle.
-    }
     for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
         emm_record_t * di = &emm_desc_table[i];
-        if (di->handler == 0xFF) { // empty line
+#ifdef EMS_DEBUG
+        sprintf(tmp, "   %04d |     %02Xh |        %04Xh |         %04Xh |",
+                      i, di->handler, di->logical_page, di->physical_page); logMsg(tmp);
+#endif
+        if (di->handler == emm_handle && di->physical_page == physical_page_number || // replace the page
+            di->handler == 0xFF) { // empty line
             di->physical_page = physical_page_number;
             di->logical_page = logical_page_number;
             di->handler = emm_handle;
-            break;
+#ifdef EMS_DEBUG
+            sprintf(tmp, "r: %04d |     %02Xh |        %04Xh |         %04Xh |",
+                          i, di->handler, di->logical_page, di->physical_page); logMsg(tmp);
+#endif
+            return 0;
         }
     }
-    return 0;
+    // TODO: ensure what to do if we have no more slots to save mapping
+    return 0x8B00; // physical page is out of the range
 }
 
 uint16_t deallocate_emm_pages(uint16_t emm_handle) {
@@ -292,16 +343,35 @@ uint16_t deallocate_emm_pages(uint16_t emm_handle) {
             }
         }
     }
+#ifdef EMS_DEBUG
+    logMsg("EMM TBL | Handler | Logical page | Physical page | DEALLOCATE");
+#endif
     for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
         emm_record_t * di = &emm_desc_table[i];
+#ifdef EMS_DEBUG
+        sprintf(tmp, "   %04d |     %02Xh |        %04Xh |         %04Xh |",
+                     i, di->handler, di->logical_page, di->physical_page); logMsg(tmp);
+#endif
         if (di->handler == emm_handle) {
             // return 0x86 << 8; // The memory manager detected a save or restore page mapping context error.
             di->handler = 0xFF;
+#ifdef EMS_DEBUG
+            sprintf(tmp, "r  %04d |     %02Xh |        %04Xh |         %04Xh |",
+                          i, di->handler, di->logical_page, di->physical_page); logMsg(tmp);
+#endif
         }
     }
+#ifdef EMS_DEBUG
+    logMsg("Handler | in use | pages | DEALLOCATE");
+    sprintf(tmp, "    %03d |      %d | %05d |", emm_handle, h->handler_in_use, h->pages_acllocated); logMsg(tmp);
+#endif
     h->pages_acllocated = 0;
-    if (emm_handle) // do not mark zero handler as not in use
+    if (emm_handle) {// do not mark zero handler as not in use
         h->handler_in_use = false;
+    }
+#ifdef EMS_DEBUG
+    sprintf(tmp, "res %03d |      %d | %05d |", emm_handle, h->handler_in_use, h->pages_acllocated); logMsg(tmp);
+#endif
     return 0;
 }
 
@@ -322,7 +392,21 @@ uint16_t save_emm_mapping(uint16_t ext_handler) {
                           // page mapping registers.  The state of the map registers has
                           // not been saved.
     }
-    memcpy(to_save->table, emm_desc_table, sizeof emm_desc_table);
+    to_save->ext_handler = ext_handler;
+#ifdef EMS_DEBUG
+    logMsg("EMM TBL | Handler | Logical page | Physical page | SAVE");
+#endif
+    for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
+        emm_record_t* pd = &to_save->table[i];
+        const emm_record_t* ps = &emm_desc_table[i];
+        pd->handler = ps->handler;
+        pd->logical_page = ps->logical_page;
+        pd->physical_page = ps->physical_page;
+#ifdef EMS_DEBUG
+        sprintf(tmp, "   %04d |     %02Xh |        %04Xh |         %04Xh |",
+                      i, ps->handler, ps->logical_page, ps->physical_page); logMsg(tmp);
+#endif
+    }
     return 0;
 }
 
@@ -330,7 +414,20 @@ uint16_t restore_emm_mapping(uint16_t ext_handler) {
     for (int i = 0; i < MAX_SAVED_EMM_TABLES; ++i) {
         emm_saved_table_t * di = &emm_saved_tables[i];
         if (di->ext_handler == ext_handler) {
-            memcpy(emm_desc_table, di->table, sizeof emm_desc_table);
+#ifdef EMS_DEBUG
+            logMsg("EMM TBL | Handler | Logical page | Physical page | RESTORE");
+#endif
+            for (int i = 0; i < PHYSICAL_EMM_PAGES; ++i) {
+                const emm_record_t* ps = &di->table[i];
+                emm_record_t* pd = &emm_desc_table[i];
+                pd->handler = ps->handler;
+                pd->logical_page = ps->logical_page;
+                pd->physical_page = ps->physical_page;
+#ifdef EMS_DEBUG
+                sprintf(tmp, "   %04d |     %02Xh |        %04Xh |         %04Xh |",
+                             i, ps->handler, ps->logical_page, ps->physical_page); logMsg(tmp);
+#endif
+            }
             memset(di->table, 0, sizeof emm_desc_table);
             di->ext_handler = 0;
             return 0;
@@ -362,11 +459,18 @@ uint16_t restore_emm_mapping(uint16_t ext_handler) {
                      pages allocated to the open EMM handle.
 */
 uint16_t get_all_emm_handle_pages(uint32_t addr32) {
+#ifdef EMS_DEBUG
+    logMsg("get_all_emm_handle_pages");
+#endif
     uint16_t res = 0;
     for (int handler = 0; handler < MAX_EMM_HANDLERS; ++handler) {
         emm_handler_t * h = &handlers[handler];
         if (!h->handler_in_use)
             continue;
+#ifdef EMS_DEBUG
+        sprintf(tmp, "ALL EMM H: %03d | in use: %01d | pages: %04d |",
+                      handler, h->handler_in_use, h->pages_acllocated);  logMsg(tmp);
+#endif
         ++res;
         writew86(addr32++, handler); addr32++;
         writew86(addr32++, h->pages_acllocated); addr32++;
@@ -375,6 +479,9 @@ uint16_t get_all_emm_handle_pages(uint32_t addr32) {
 }
 
 void get_emm_pages_map(uint32_t addr32) {
+#ifdef EMS_DEBUG
+    logMsg("set_emm_pages_map TODO");
+#endif
     uint8_t * t = &emm_desc_table;
     for (int i = 0; i < sizeof emm_desc_table; ++i) {
         write86(addr32++, *t++);
@@ -382,6 +489,9 @@ void get_emm_pages_map(uint32_t addr32) {
 }
 
 void set_emm_pages_map(uint32_t addr32) {
+#ifdef EMS_DEBUG
+    logMsg("set_emm_pages_map TODO");
+#endif
     uint8_t * t = &emm_desc_table;
     for (int i = 0; i < sizeof emm_desc_table; ++i) {
         *t++ = read86(addr32++);
@@ -389,6 +499,9 @@ void set_emm_pages_map(uint32_t addr32) {
 }
 
 uint16_t get_emm_pages_map_size() {
+#ifdef EMS_DEBUG
+    logMsg("get_emm_pages_map_size TODO");
+#endif
     return sizeof emm_desc_table;
 }
 
@@ -564,12 +677,13 @@ uint16_t map_unmap_emm_seg_pages(uint16_t handle, uint16_t log_to_seg_map_len, u
 */
 uint16_t get_mappable_phys_pages() { return 4; }
 uint16_t get_mappable_physical_array(uint16_t mappable_phys_page) {
-    char tmp[80];
     uint16_t cs = PHYSICAL_EMM_SEGMENT;
     for (uint16_t physical_page = 0; physical_page < get_mappable_phys_pages(); ++physical_page, cs += 0x400) {
         writew86(mappable_phys_page++, cs); mappable_phys_page++;
         writew86(mappable_phys_page++, physical_page); mappable_phys_page++;
+#ifdef EMS_DEBUG
         sprintf(tmp, "LIM40 PAGE 0x%X : %d", cs, physical_page); logMsg(tmp);
+#endif
     }
     return 0;
 }
@@ -700,3 +814,494 @@ uint16_t allocate_emm_raw_pages(uint16_t pages) {
     // TODO:
     return 0x86;
 }
+
+void custom_on_board_emm() {
+    uint16_t FN = CPU_AH;
+    // sprintf(tmp, "LIM40 FN %Xh", FN); logMsg(tmp);
+    switch(CPU_AH) { // EMM LIM 4.0
+    // The Get Status function returns a status code indicating whether the
+    // memory manager is present and the hardware is working correctly.
+    case 0x40: {
+        CPU_AX = 0;
+#ifdef EMS_DEBUG
+        logMsg("LIM40 FN 40h status: 0 (OK)");
+#endif
+        zf = 0;
+        return;
+    }
+    // The Get Page Frame Address function returns the segment address where
+    // the page frame is located.
+    case 0x41: {
+        CPU_BX = emm_conventional_segment(); // page frame segment address
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh -> 0x%X (page frame segment)", FN, CPU_BX); logMsg(tmp);
+#endif
+        CPU_AX = 0;
+        zf = 0;
+        return;
+    }
+    // The Get Unallocated Page Count function returns the number of
+    // unallocated pages and the total number of expanded memory pages.
+    case 0x42: {
+        CPU_BX = unallocated_emm_pages();
+        CPU_DX = total_emm_pages();
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh -> %d free of %d EMM pages", FN, CPU_BX, CPU_DX); logMsg(tmp);
+#endif
+        CPU_AX = 0;
+        zf = 0;
+        return;
+    }
+    // The Allocate Pages function allocates the number of pages requested
+    // and assigns a unique EMM handle to these pages. The EMM handle owns
+    // these pages until the application deallocates them.
+    case 0x43: {
+        CPU_DX = allocate_emm_pages(CPU_BX, &CPU_AX);
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh err: %Xh alloc(%d pages); handler: %d", FN, CPU_AH, CPU_BX, CPU_DX); logMsg(tmp);
+#endif
+        if (CPU_AX) zf = 1; else zf = 0;
+        return;
+    }
+    // The Map/Unmap Handle Page function maps a logical page at a specific
+    // physical page anywhere in the mappable regions of system memory.
+    case 0x44: {
+        // AL = physical_page_number
+        // BX = logical_page_number, if FFFFh, the physical page specified in AL will be unmapped
+        // DX = emm_handle
+        uint8_t AL = CPU_AL;
+        CPU_AX = map_unmap_emm_page(CPU_AL, CPU_BX, CPU_DX);
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh res: phys page %d was mapped to %d logical for %d EMM handler",
+                      FN, AL, CPU_BX, CPU_DX); logMsg(tmp);
+#endif
+        if (CPU_AX) zf = 1; else zf = 0;
+        return;
+    }
+    // Deallocate Pages deallocates the logical pages currently allocated to an EMM handle.
+    case 0x45: {
+        uint16_t emm_handle = CPU_DX;
+        CPU_AX = deallocate_emm_pages(emm_handle);
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh res: %Xh - EMM handler %d dealloc", FN, CPU_AX, emm_handle); logMsg(tmp);
+#endif
+        if (CPU_AX) zf = 1; else zf = 0;
+        return;
+    }
+    // The Get Version function returns the version number of the memory manager software.
+    case 0x46: {
+        /*
+                                     0100 0000
+                                       /   \
+                                      4  .  0
+        */
+        CPU_AL = 0b01000000; // 4.0
+#ifdef EMS_DEBUG
+        logMsg("LIM40 FN 46h res: 4.0");
+#endif
+        CPU_AH = 0; zf = 0;
+        return;
+    }
+    // Save Page Map saves the contents of the page mapping registers on all
+    // expanded memory boards in an internal save area.
+    case 0x47: {
+        CPU_AX = save_emm_mapping(CPU_DX);
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh res: %Xh (save mapping for %d)", FN, CPU_AX, CPU_DX); logMsg(tmp);
+#endif
+        if (CPU_AX) zf = 1; else zf = 0;
+        return;
+    }
+    // The Restore Page Map function restores the page mapping register
+    // contents on the expanded memory boards for a particular EMM handle.
+    // This function lets your program restore the contents of the mapping
+    // registers its EMM handle saved.
+    case 0x48: {
+        CPU_AX = restore_emm_mapping(CPU_DX);
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh res: %Xh (restore mapping for %d)", FN, CPU_AX, CPU_DX); logMsg(tmp);
+#endif
+        if (CPU_AX) zf = 1; else zf = 0;
+        return;
+    }
+    // The Get Handle Count function returns the number of open EMM handles
+    // (including the operating system handle 0) in the system.
+    case 0x4B: {
+        CPU_BX = total_open_emm_handles();
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh res: %Xh - total_emm_handlers", FN, CPU_BX); logMsg(tmp);
+#endif
+        CPU_AX = 0; zf = 0;
+        return;
+    }
+    // The Get Handle Pages function returns the number of pages allocated to
+    // a specific EMM handle.
+    case 0x4C: {
+        CPU_BX = get_emm_handle_pages(CPU_DX, &CPU_AX);
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh handler: %d; res: %Xh; pages handled: %d", FN, CPU_DX, CPU_AX, CPU_BX); logMsg(tmp);
+#endif
+        if (CPU_AX) zf = 1; else zf = 0;
+        return;
+    }
+    // The Get All Handle Pages function returns an array of the open emm
+    // handles and the number of pages allocated to each one.
+    case 0x4D: {
+        // ES:DI = pointer to handle_page
+        uint32_t addr32 = ((uint32_t)CPU_ES << 4) + CPU_DI;
+        CPU_BX = get_all_emm_handle_pages(addr32);
+#ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh all_handlers: %d (open handles)", FN, CPU_BX); logMsg(tmp);
+#endif
+        CPU_AX = 0; zf = 0;
+        return;
+    }
+    case 0x4E:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        // The Get Page Map subfunction saves the mapping context for all
+        // mappable memory regions (conventional and expanded) by copying the
+        // contents of the mapping registers from each expanded memory board to a
+        // destination array.
+        case 0x00: {
+            // ES:DI = dest_page_map
+            uint32_t addr32 = ((uint32_t)CPU_ES << 4) + CPU_DI;
+            get_emm_pages_map(addr32);
+#ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh emm pages: %Xh done", FN, CPU_AX); logMsg(tmp);
+#endif
+            CPU_AX = 0; zf = 0;
+            return;
+        }
+        // The Set Page Map subfunction restores the mapping context for all
+        // mappable memory regions (conventional and expanded) by copying the
+        // contents of a source array into the mapping registers on each expanded
+        // memory board in the system.
+        case 0x01: {
+            // DS:SI = source_page_map
+            uint32_t addr32 = ((uint32_t)CPU_DS << 4) + CPU_SI;
+            set_emm_pages_map(addr32);
+#ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh (save emm) done", FN); logMsg(tmp);
+#endif
+            CPU_AX = 0; zf = 0;
+            return;
+        }
+        // The Get & Set subfunction simultaneously saves a current mapping
+        // context and restores a previous mapping context for all mappable
+        // memory regions (both conventional and expanded).
+        case 0x02: {
+            // ES:DI = dest_page_map
+            // DS:SI = source_page_map
+            get_emm_pages_map(((uint32_t)CPU_ES << 4) + CPU_DI);
+            set_emm_pages_map(((uint32_t)CPU_DS << 4) + CPU_SI);
+#ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh (get/save) done", FN); logMsg(tmp);
+#endif
+            CPU_AX = 0; zf = 0;
+            return;
+        }
+        // The Get Size of Page Map Save Array subfunction returns the storage
+        // requirements for the array passed by the other three subfunctions.
+        // This subfunction doesn't require an EMM handle.
+        case 0x03: {
+            CPU_AX = get_emm_pages_map_size();
+#ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh emm pages size: %Xh", FN, CPU_AX); logMsg(tmp);
+#endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+    }
+    case 0x4F:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        // The Get Partial Page Map subfunction saves a partial mapping context
+        // for specific mappable memory regions in a system.
+        case 0x00: {
+            // DS:SI = partial_page_map
+            // ES:DI = dest_array
+            CPU_AX = get_partial_emm_page_map((CPU_DS << 4) + CPU_SI, (CPU_ES << 4) + CPU_DI);
+#ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_partial_emm_page_map (w/a)", FN, CPU_AH); logMsg(tmp);
+#endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+        case 0x01: {
+            // DS:SI = source_array
+            CPU_AX = set_partial_emm_page_map((CPU_DS << 4) + CPU_SI);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh set_partial_emm_page_map (w/a)", FN, CPU_AH); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+        // The Return Size subfunction returns the storage requirements for the
+        // array passed by the other two subfunctions.  This subfunction doesn't
+        // require an EMM handle.
+        case 0x03: {
+            // BX = number of pages in the partial array
+            CPU_AX = get_emm_pages_map_size(); // W/A
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_emm_pages_map_size (w/a)", FN, CPU_AX); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+    }
+    case 0x50:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        // MAPPING AND UNMAPPING MULTIPLE PAGES
+        case 0x00: {
+            uint16_t handle = CPU_DX;
+            uint16_t log_to_phys_map_len = CPU_CX;
+            uint32_t log_to_phys_map = ((uint32_t)CPU_DS << 4) + CPU_SI;
+            CPU_AX = map_unmap_emm_pages(handle, log_to_phys_map_len, log_to_phys_map);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh map_unmap_emm_pages(%d, %d, %Xh)",
+                    FN, CPU_AX, handle, log_to_phys_map_len, log_to_phys_map); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+        // MAP/UNMAP MULTIPLE HANDLE PAGES (by physical segments)
+        case 0x01: {
+            uint16_t handle = CPU_DX;
+            uint16_t log_to_segment_map_len = CPU_CX;
+            uint32_t log_to_segment_map = ((uint32_t)CPU_DS << 4) + CPU_SI;
+            CPU_AX = map_unmap_emm_seg_pages(handle, log_to_segment_map_len, log_to_segment_map);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh map_unmap_emm_seg_pages(%d, %d, %Xh)",
+                    FN, CPU_AX, handle, log_to_segment_map_len, log_to_segment_map); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+    }
+    // REALLOCATE PAGES
+    case 0x51: {
+        CPU_AX = reallocate_emm_pages(CPU_DX, CPU_BX);
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh err: %Xh realloc(%d pages); handler: %d", FN, CPU_AH, CPU_BX, CPU_DX); logMsg(tmp);
+        #endif
+        if (CPU_AX) zf = 1; else zf = 0;
+        return;
+    }
+    // Optional: set handler attributes
+    case 0x52: {
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh err: 91h Optional: set handler attributes (not implemented)", FN); logMsg(tmp);
+        #endif
+        CPU_AX = 0x9100; // not supported
+        zf = 1;
+        return;
+    }
+    case 0x53:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        // GET HANDLE NAME 
+        case 0x00: {
+            uint16_t handle = CPU_DX;
+            uint32_t handle_name = ((uint32_t)CPU_ES << 4) + CPU_DI;
+            CPU_AX = get_handle_name(handle, handle_name);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_handle_name(%d, %Xh)",
+                    FN, CPU_AX, handle, handle_name); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+        // SET HANDLE NAME
+        case 0x01: {
+            uint16_t handle = CPU_DX;
+            uint32_t handle_name = ((uint32_t)CPU_DS << 4) + CPU_SI;
+            CPU_AX = set_handle_name(handle, handle_name);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_handle_name(%d, %Xh)", FN, CPU_AX, handle, handle_name); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+    }
+    case 0x54:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        // GET HANDLE DIRECTORY
+        case 0x00: {
+            uint32_t handle_dir_struct = ((uint32_t)CPU_ES << 4) + CPU_DI;
+            CPU_AX = get_handle_dir(handle_dir_struct);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh handle_dir_struct(%Xh)", FN, CPU_AX, handle_dir_struct); logMsg(tmp);
+            #endif
+            if (CPU_AH) zf = 1; else zf = 0;
+            return;
+        }
+        // SEARCH FOR NAMED HANDLE
+        case 0x01: {
+            uint32_t handle_name = ((uint32_t)CPU_ES << 4) + CPU_DI;
+            CPU_DX = lookup_handle_dir(handle_name , &CPU_AX);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh handle: %d lookup_handle_dir(%Xh)", FN, CPU_AH, CPU_DX, handle_name); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+        // GET TOTAL HANDLES
+        case 0x02: {
+            CPU_BX = MAX_EMM_HANDLERS;
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh MAX_EMM_HANDLERS: %d", FN, CPU_BX); logMsg(tmp);
+            #endif
+            CPU_AX = 0; zf = 0;
+            return;
+        }
+        // TODO: 
+    }
+    // ALTER PAGE MAP & JUMP
+    case 0x55: {
+        uint8_t page_number_segment_selector = CPU_AL;
+        uint16_t handle = CPU_DX;
+        uint32_t map_and_jump = ((uint32_t)CPU_DS << 4) + CPU_SI;
+        CPU_AH = map_emm_and_jump(page_number_segment_selector, handle, map_and_jump);
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh res: %Xh handle: %d page_number_segment_selector: %d (not implemented)",
+                      FN, CPU_AH, CPU_DX, page_number_segment_selector); logMsg(tmp);
+        #endif
+        if (CPU_AH) zf = 1; else zf = 0;
+        return;
+    }
+    // ALTER PAGE MAP & CALL
+    case 0x56: {
+        uint8_t page_number_segment_selector = CPU_AL;
+        uint16_t handle = CPU_DX;
+        uint32_t map_and_call = ((uint32_t)CPU_DS << 4) + CPU_SI;
+        CPU_AH = map_emm_and_call(page_number_segment_selector, handle, map_and_call);
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh res: %Xh handle: %d page_number_segment_selector: %d (not implemented)",
+                      FN, CPU_AH, CPU_DX, page_number_segment_selector); logMsg(tmp);
+        #endif
+        if (CPU_AH) zf = 1; else zf = 0;
+        return;
+    }
+    // MOVE/EXCHANGE MEMORY REGION
+    case 0x57: {
+        CPU_AH = 0x86;
+        
+        logMsg("LIM40 FN 57h MOVE/EXCHANGE MEMORY REGION (not implemented)");
+        
+        if (CPU_AH) zf = 1; else zf = 0;
+        return;
+    }
+    case 0x58:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        // GET MAPPABLE PHYSICAL ADDRESS ARRAY
+        case 0x00: {
+            uint32_t mappable_phys_page = ((uint32_t)CPU_ES << 4) + CPU_DI;
+            CPU_AX = get_mappable_physical_array(mappable_phys_page);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh res: %Xh get_mappable_physical_array(%Xh)",
+                    FN, CPU_AX, mappable_phys_page); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+        // GET MAPPABLE PHYSICAL ADDRESS ARRAY ENTRIES
+        case 0x01: {
+            CPU_CX = get_mappable_phys_pages();
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh get_mappable_phys_pages: %d", FN, CPU_CX); logMsg(tmp);
+            #endif
+            CPU_AX = 0; zf = 0;
+            return;
+        }
+    }
+    case 0x59:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        // GET HARDWARE CONFIGURATION ARRAY
+        case 0x00: {
+            uint32_t hardware_info = ((uint32_t)CPU_ES << 4) + CPU_DI;
+            get_hardvare_emm_info(hardware_info);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh GET HARDWARE CONFIGURATION ARRAY", FN); logMsg(tmp);
+            #endif
+            CPU_AX = 0; zf = 0;
+            return;
+        }
+        // GET UNALLOCATED RAW PAGE COUNT
+        case 0x01: {
+            CPU_BX = unallocated_emm_pages();
+            CPU_DX = total_emm_pages();
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh %d of %d free pages", FN, CPU_BX, CPU_DX); logMsg(tmp);
+            #endif
+            CPU_AX = 0; zf = 0;
+            return;
+        }
+    }
+    case 0x5A:
+        FN = CPU_AX;
+        switch(CPU_AL) {
+        //  ALLOCATE STANDARD PAGES
+        case 0x00: {
+            CPU_AX = allocate_emm_pages_sys(CPU_BX, CPU_DX);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh (%d, %d) allocate_emm_pages_sys res: %Xh", FN, CPU_BX, CPU_DX, CPU_AX); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+        //  ALLOCATE STANDARD/RAW
+        case 0x01: {
+            CPU_AX = allocate_emm_raw_pages(CPU_BX);
+            #ifdef EMS_DEBUG
+            sprintf(tmp, "LIM40 FN %Xh (%d, %d) allocate_emm_raw_pages res: %Xh (not yet)", FN, CPU_BX, CPU_DX, CPU_AX); logMsg(tmp);
+            #endif
+            if (CPU_AX) zf = 1; else zf = 0;
+            return;
+        }
+    }
+    case 0x5B: {
+        CPU_AH = 0x86;
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh ALTERNATE MAP REGISTER SET (not implemented)", FN); logMsg(tmp);
+        #endif
+        if (CPU_AH) zf = 1; else zf = 0;
+        return;
+    }
+    case 0x5C: {
+        CPU_AH = 0x00;
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh PREPARE EXPANDED MEMORY HARDWARE FOR WARM BOOT", FN); logMsg(tmp);
+        #endif
+        // TODO: ensure it is not required
+        zf = 0;
+        return;
+    }
+    case 0x5D: {
+        CPU_AH = 0x86;
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh ENABLE/DISABLE OS/E FUNCTION SET (not implemented)", FN); logMsg(tmp);
+        #endif
+        if (CPU_AH) zf = 1; else zf = 0;
+        return;
+    }
+    default:
+        #ifdef EMS_DEBUG
+        sprintf(tmp, "LIM40 FN %Xh (not implemented)", CPU_AX); logMsg(tmp);
+        #endif
+        break;
+    }
+}
+
+void emm_reboot() {
+   memset(emm_saved_tables, 0, sizeof emm_saved_tables);
+   memset(emm_desc_table, 0, sizeof emm_desc_table);
+   memset(handlers, 0, sizeof handlers);
+   init_emm();
+}
+
+#endif

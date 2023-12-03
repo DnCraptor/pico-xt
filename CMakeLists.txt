@@ -14,6 +14,9 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
 
+set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -ffunction-sections -fdata-sections -O2")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections -O2")
+
 if (PICO_PLATFORM STREQUAL "host")
     set(SDL2_LIB_DIR C:/SDL/lib)
     set(SDL2_INCLUDE_DIR C:/SDL/include)
@@ -26,6 +29,7 @@ if (PICO_PLATFORM STREQUAL "host")
     link_directories(
             ${SDL2_LIB_DIR}
     )
+
 else ()
     #add_compile_definitions(${PROJECT_NAME} NO_GRAPHICS)
     set(FAMILY rp2040)
@@ -39,9 +43,10 @@ else ()
     add_subdirectory(drivers/nespad)
 endif ()
 
+
 # INCLUDE FILES THAT SHOULD BE COMPILED:
 
-file(GLOB_RECURSE SRC "src/*.cpp" "src/*.c" "src/*.h")
+file(GLOB_RECURSE SRC "src/*.cpp" "src/*.c")
 
 
 message(STATUS "Add source files:")
@@ -57,7 +62,10 @@ pico_set_program_name(pico-xt "PICO PC/XT 8086 Emulator by xrip/DnCraptor")
 pico_set_program_version(pico-xt "test")
 
 #set(PICO_DEOPTIMIZED_DEBUG 1)
-#set(OVERCLOCKING 366)
+#if (!OVERCLOCKING)
+set(OVERCLOCKING 396)
+#endif ()
+
 
 if (PICO_PLATFORM STREQUAL "host")
     target_link_libraries(${PROJECT_NAME} SDL2)
@@ -67,7 +75,10 @@ if (PICO_PLATFORM STREQUAL "host")
     foreach (Dependency IN LISTS PROJECT_DEPENDENCIES)
         file(COPY ${Dependency} DESTINATION ${OUTPUT_DIR})
     endforeach ()
-
+    add_link_options(-Wl,--gc-sections)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+            SWAP_BLOCK_4k
+    )
 else ()
     if (OVERCLOCKING)
         set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "${PROJECT_NAME}-${OVERCLOCKING}MHz")
@@ -83,6 +94,8 @@ else ()
         message(STATUS "==================================")
         message(STATUS "")
     endif ()
+    # Enable compiler and linker garbage collect unused code/data sections
+    add_link_options(-Wl,--gc-sections)
     target_link_libraries(${PROJECT_NAME} PRIVATE
             vga-nextgen
             ps2
@@ -108,32 +121,32 @@ else ()
     set_target_properties(${PROJECT_NAME} PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/memmap.ld)
 
     family_configure_device_example(${PROJECT_NAME} noos)
-    
+
     target_sources(${PROJECT_NAME} PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb/usb.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb/msc_disk.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb/usb_descriptors.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb/usb.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb/msc_disk.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb/usb_descriptors.c
     )
     target_include_directories(${PROJECT_NAME} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb
-        ${CMAKE_CURRENT_SOURCE_DIR}/assets
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/drivers/usb
+            ${CMAKE_CURRENT_SOURCE_DIR}/assets
     )
     if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(${PROJECT_NAME} PUBLIC
-            -Wno-error=suggest-attribute=format
-            -Wno-error=cast-qual
-            -Wno-error=unused-parameter
-            -Wno-error=conversion
-            -Wno-error=format=
-            -Wno-error=sign-compare
-            -Wno-error=missing-field-initializers
-            -Wno-error=switch
-            -Wno-error=implicit-fallthrough=
-            -Wno-error=stringop-truncation
-            -Wno-error=restrict
-            -w
-    )
+        target_compile_options(${PROJECT_NAME} PUBLIC
+                -Wno-error=suggest-attribute=format
+                -Wno-error=cast-qual
+                -Wno-error=unused-parameter
+                -Wno-error=conversion
+                -Wno-error=format=
+                -Wno-error=sign-compare
+                -Wno-error=missing-field-initializers
+                -Wno-error=switch
+                -Wno-error=implicit-fallthrough=
+                -Wno-error=stringop-truncation
+                -Wno-error=restrict
+                -w
+        )
     endif ()
 
     target_compile_definitions(${PROJECT_NAME} PRIVATE
@@ -167,20 +180,34 @@ else ()
 
             # supports only for pico with 4 or more MB flashes
             PICO_FLASH_SIZE_BYTES=4194304
-            SD_CARD_SWAP=1
 
             #BOOT_DEBUG=1
-            #BOOT_DEBUG_ACC=0x800000
+            #BOOT_DEBUG_ACC=0xA0000
+            
+            # select onr of the folowing:
+            #SWAP_BLOCK_1k
+            #SWAP_BLOCK_2k
+            SWAP_BLOCK_4k
+
+            EMS_DRIVER=1
+            #EMS_DEBUG=1
+            XMS_DRIVER=1
+            XMS_OVER_HMA_KB=0
+            XMS_UMB=1
+            XMS_HMA=1
+            HANDLE_REBOOT
 
             #ROM_DRIVE_B=1
+
+            DMA_8237
     )
 
-#[[    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-            COMMAND picotool info ${OUTPUT_DIR}/$<TARGET_PROPERTY:OUTPUT_NAME>.uf2 &&
-            picotool reboot -f -u & mode COM8 baud=12 parity=n data=8 stop=1 & ping -n 3 127.1> nul &
-            picotool load ${OUTPUT_DIR}/$<TARGET_PROPERTY:OUTPUT_NAME>.uf2 &&
-            picotool reboot
-    )]]
+    #[[    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND picotool info ${OUTPUT_DIR}/$<TARGET_PROPERTY:OUTPUT_NAME>.uf2 &&
+                picotool reboot -f -u & mode COM8 baud=12 parity=n data=8 stop=1 & ping -n 3 127.1> nul &
+                picotool load ${OUTPUT_DIR}/$<TARGET_PROPERTY:OUTPUT_NAME>.uf2 &&
+                picotool reboot
+        )]]
 
 endif ()
 
