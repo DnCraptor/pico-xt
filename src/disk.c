@@ -80,10 +80,9 @@ static _FILE* tryFlushROM(uint8_t drivenum, size_t size, char *ROM, char *path) 
 
 #include "disk_c.h"
 #include "fat12.h"
-
+char tmp[85];
 static _FILE* tryDefaultDrive(uint8_t drivenum, size_t size, char *path) {
-    char* tmp[40];
-    sprintf(tmp, "Drive 0x%02X not found. Will try to init %s by size: %f MB...", drivenum, path, (size / 1024.0f / 1024.0f));
+    sprintf(tmp, "Drive 0x%02X not found. Will try to init %s by size: %000.00f MB...", drivenum, path, size / 1000000.0f);
     logMsg(tmp);
     _FILE *pFile = actualDrive(drivenum);
     FRESULT result = f_open(pFile, path, FA_WRITE | FA_CREATE_ALWAYS);
@@ -107,7 +106,11 @@ static _FILE* tryDefaultDrive(uint8_t drivenum, size_t size, char *path) {
         f_write(pFile, drive_c_0007E00, sizeof(drive_c_0007E00), &bw);
     } else {
         UINT bw;
-        f_write(pFile, drive_b_0000000, sizeof(drive_b_0000000), &bw);     
+        f_write(pFile, drive_b_0000000, sizeof(drive_b_0000000), &bw);   
+        f_lseek(pFile, 0x0001400);
+        f_write(pFile, drive_b_0001400, sizeof(drive_b_0001400), &bw);
+        f_lseek(pFile, 0x0002600);
+        f_write(pFile, drive_b_0002600, sizeof(drive_b_0002600), &bw);
     }
     gpio_put(PICO_DEFAULT_LED_PIN, false);
     return pFile;
@@ -127,7 +130,7 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
                 if (!pFile)
                     pathname = NULL;
             } else {
-                pFile = tryDefaultDrive(drivenum, drivenum > 1 ? 0xFFF0000 : 2949120, pathname);
+                pFile = tryDefaultDrive(drivenum, drivenum > 1 ? 0xFFF0000 : 1457664, pathname);
                 if (!pFile)
                     return 1;
                 size = f_size(pFile);
@@ -162,11 +165,11 @@ uint8_t insertdisk(uint8_t drivenum, size_t size, char *ROM, char *pathname) {
         sects = 63;
         heads = 16;
         cyls = size / (sects * heads * 512);
-    } else {   // it's a floppy image (2.88 МВ = 2949120 B)
+    } else {   // it's a floppy image (2.88 МВ = 2949120 B) 2915328 ??
         cyls = 80;
         sects = 36;
         heads = 2;
-        if (size <= 1474560) // 1.44 MB
+        if (size <= 1457664) // 1.44 MB
             sects = 18;
         if (size <= 1228800) // 1.2 MB
             sects = 15;
@@ -267,7 +270,6 @@ void logFile(char* msg) {
 }
 #endif
 
-char tmp[40];
 static void
 bios_readdisk(uint8_t drivenum,
               uint16_t dstseg, uint16_t dstoff,
