@@ -15,9 +15,8 @@ _FILE * getFileC() { return &fileC; }
 size_t getFileA_sz() { return fileA.obj.fs ? f_size(&fileA) : 0; }
 size_t getFileB_sz() { return fileB.obj.fs ? f_size(&fileB) : 0; }
 size_t getFileC_sz() { return fileC.obj.fs ? f_size(&fileC) : 0; }
-#ifdef BOOT_DEBUG
 _FILE fileD; // for debug output
-#endif
+
 #else
 #include <SDL2/SDL.h>
 #define _FILE SDL_RWops
@@ -253,9 +252,9 @@ bool img_disk_write_sec(int drv, BYTE * buffer, LBA_t lba) {
 }
 #endif
 
-#ifdef BOOT_DEBUG
+#if PICO_ON_DEVICE
 void logFile(char* msg) {
-    f_open(&fileD, "\\XT\\boot.log", FA_WRITE | FA_OPEN_APPEND);
+    f_open(&fileD, "\\XT\\debug.log", FA_WRITE | FA_OPEN_APPEND);
     UINT bw;
     f_write(&fileD, msg, strlen(msg), &bw);
     f_close(&fileD);

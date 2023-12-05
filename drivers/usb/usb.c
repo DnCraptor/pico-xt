@@ -182,6 +182,7 @@ static volatile bool plusPressed = false;
 static volatile bool minusPressed = false;
 static volatile bool ctrlPressed = false;
 static volatile bool tabPressed = false;
+volatile bool DEBUG_TO_FILE = false;
 
 void handleScancode(uint32_t ps2scancode) {
     switch (ps2scancode) {
@@ -221,6 +222,9 @@ void handleScancode(uint32_t ps2scancode) {
       case 0x8F:
         tabPressed = false;
         break;
+    }
+    if (tabPressed && tabPressed && enterPressed && !DEBUG_TO_FILE) {
+      DEBUG_TO_FILE = true;
     }
 }
 

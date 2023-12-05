@@ -516,13 +516,14 @@ void set_start_debug_line(int _start_debug_line) {
     start_debug_line = _start_debug_line;
 }
 
-#if BOOT_DEBUG
+#if PICO_ON_DEVICE
 void logFile(char* msg);
+extern volatile bool DEBUG_TO_FILE;
 #endif
 
 void logMsg(char* msg) {
-#if BOOT_DEBUG
-    { char tmp[85]; sprintf(tmp, "%s\n", msg); logFile(tmp); }
+#if PICO_ON_DEVICE
+    if(DEBUG_TO_FILE) { char tmp[85]; sprintf(tmp, "%s\n", msg); logFile(tmp); }
 #else
     printf("%s\n", msg);
 #endif

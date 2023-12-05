@@ -687,11 +687,25 @@ INLINE void writerm8(uint8_t rmval, uint8_t value) {
         putreg8(rmval, value);
     }
 }
-
+uint8_t PageNumber, Row, Column = 0;
 uint8_t tandy_hack = 0;
-
+#if PICO_ON_DEVICE
+extern volatile bool DEBUG_TO_FILE;
+        char tmp[80];
+#endif
+bool lock_out = false;
 static void intcall86(uint8_t intnum) {
     uint32_t tempcalc, memloc, n;
+#if PICO_ON_DEVICE
+    if (DEBUG_TO_FILE && !lock_out) {
+        sprintf(tmp, "INT %02Xh AX: %04Xh BX: %04Xh CX: %04Xh DX: %04Xh", intnum, CPU_AX, CPU_BX, CPU_CX, CPU_DX); logMsg(tmp);
+        lock_out = true;
+        intcall86(intnum);
+        sprintf(tmp, "RET %02Xh AX: %04Xh BX: %04Xh CX: %04Xh DX: %04Xh", intnum, CPU_AX, CPU_BX, CPU_CX, CPU_DX); logMsg(tmp);
+        lock_out = false;
+        return;
+    }
+#endif
     switch (intnum) {
 #ifdef EMS_DRIVER
         case 0x67: {
@@ -715,6 +729,22 @@ static void intcall86(uint8_t intnum) {
         case 0x10:
             //printf("INT 10h CPU_AH: 0x%x CPU_AL: 0x%x\r\n", CPU_AH, CPU_AL);
             switch (CPU_AH) {
+                case 0x02: // Set cursor position
+                	// BH = Page Number, DH = Row, DL = Column
+                    PageNumber = CPU_BH;
+                    Row = CPU_DH;
+                    Column = CPU_DL;
+                    break;
+                case 0x08: // Read character and attribute at cursor position
+                // BH = Page Number
+                // AH = Color, AL = Character
+                    if (CPU_BH == PageNumber) {
+                        uint16_t addr = ((uint16_t)Row * 80 + (uint16_t)Column) << 1;
+                        CPU_AH = VIDEORAM[addr++];
+                        CPU_AL = VIDEORAM[addr  ];
+                        return;
+                    }
+                    break;
                 case 0x0f:
                     if (videomode < 8) break;
                     CPU_AL = videomode;
