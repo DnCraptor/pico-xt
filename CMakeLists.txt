@@ -189,7 +189,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
         # supports only for pico with 4 or more MB flashes
         PICO_FLASH_SIZE_BYTES=4194304
 
-        CPU_8086
+        #CPU_8086
         #BOOT_DEBUG=1
         #BOOT_DEBUG_ACC=0xA0000
 

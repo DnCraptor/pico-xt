@@ -691,13 +691,19 @@ uint8_t PageNumber, Row, Column = 0;
 uint8_t tandy_hack = 0;
 #if PICO_ON_DEVICE
 extern volatile bool DEBUG_TO_FILE;
-        char tmp[80];
+char tmp[80];
+//static uint32_t opcodes[0xFF] = {0};
 #endif
 bool lock_out = false;
 static void intcall86(uint8_t intnum) {
     uint32_t tempcalc, memloc, n;
 #if PICO_ON_DEVICE
     if (DEBUG_TO_FILE && !lock_out) {
+    //    for (int i = 0; i < 0xFF; ++i) {
+    //        sprintf(tmp, "%02X: %d", i, opcodes[i]); logMsg(tmp);
+    //        opcodes[i] = 0;
+    //    }
+    //    DEBUG_TO_FILE = false;
         sprintf(tmp, "INT %02Xh AX: %04Xh BX: %04Xh CX: %04Xh DX: %04Xh", intnum, CPU_AX, CPU_BX, CPU_CX, CPU_DX); logMsg(tmp);
         lock_out = true;
         intcall86(intnum);
@@ -1903,6 +1909,13 @@ void exec86(uint32_t execloops) {
             opcode = getmem8(CPU_CS, ip);
 #endif
             StepIP(1);
+
+            if (opcodes[opcode] == 0xFFFFFFFF) {
+                opcodes[opcode] = 0;
+                sprintf(tmp, "opcode: %02Xh 32bit cnt", opcode); logMsg(tmp);
+            } else {
+                opcodes[opcode]++;
+            }
 
             switch (opcode) {
                 /* segment prefix check */
