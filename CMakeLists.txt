@@ -63,7 +63,7 @@ pico_set_program_version(pico-xt "test")
 
 #set(PICO_DEOPTIMIZED_DEBUG 1)
 #if (!OVERCLOCKING)
-set(OVERCLOCKING 416)
+set(OVERCLOCKING 432)
 #endif ()
 
 
@@ -211,6 +211,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
         #ROM_DRIVE_B=1
 
         DMA_8237
+
+        #CPU_8086
 )
 
 

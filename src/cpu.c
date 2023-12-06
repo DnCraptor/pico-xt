@@ -75,7 +75,7 @@ bool is_a20_line_open() {
     return a20_line_open;
 }
 
-uint8_t opcode, segoverride, reptype, hdcount = 0, fdcount = 0, hltstate = 0;
+uint8_t opcode, opcode2, segoverride, reptype, hdcount = 0, fdcount = 0, hltstate = 0;
 uint16_t segregs[4], ip, useseg, oldsp;
 uint8_t tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm;
 uint8_t videomode = 3;
@@ -110,7 +110,7 @@ uint64_t totalexec;
 union _bytewordregs_ regs;
 
 void modregrm() {
-    addrbyte = getmem8(CPU_CS, ip);
+    addrbyte = opcode2; //getmem8(CPU_CS, ip);
     StepIP(1);
     mode = addrbyte >> 6;
     reg = (addrbyte >> 3) & 7;
@@ -1870,7 +1870,9 @@ void exec86(uint32_t execloops) {
                 opcode = getmem8(CPU_CS, ip);
             }
 #else
-            opcode = getmem8(CPU_CS, ip);
+            register uint16_t opcode16 = getmem16(CPU_CS, ip);
+            opcode  = (uint8_t) opcode16;
+            opcode2 = (uint8_t)(opcode16 >> 8);
 #endif
             StepIP(1);
 
@@ -2835,7 +2837,7 @@ void exec86(uint32_t execloops) {
                 break;
 #endif
             case 0x70: /* 70 JO Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (of) {
                     ip = ip + temp16;
@@ -2843,7 +2845,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x71: /* 71 JNO Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!of) {
                     ip = ip + temp16;
@@ -2851,7 +2853,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x72: /* 72 JB Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (cf) {
                     ip = ip + temp16;
@@ -2859,7 +2861,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x73: /* 73 JNB Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!cf) {
                     ip = ip + temp16;
@@ -2867,7 +2869,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x74: /* 74 JZ Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (zf) {
                     ip = ip + temp16;
@@ -2875,7 +2877,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x75: /* 75 JNZ Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!zf) {
                     ip = ip + temp16;
@@ -2883,7 +2885,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x76: /* 76 JBE Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (cf || zf) {
                     ip = ip + temp16;
@@ -2891,7 +2893,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x77: /* 77 JA Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!cf && !zf) {
                     ip = ip + temp16;
@@ -2899,7 +2901,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x78: /* 78 JS Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (sf) {
                     ip = ip + temp16;
@@ -2907,7 +2909,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x79: /* 79 JNS Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!sf) {
                     ip = ip + temp16;
@@ -2915,7 +2917,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x7A: /* 7A JPE Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (pf) {
                     ip = ip + temp16;
@@ -2923,7 +2925,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x7B: /* 7B JPO Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!pf) {
                     ip = ip + temp16;
@@ -2931,7 +2933,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x7C: /* 7C JL Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (sf != of) {
                     ip = ip + temp16;
@@ -2939,7 +2941,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x7D: /* 7D JGE Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (sf == of) {
                     ip = ip + temp16;
@@ -2947,7 +2949,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x7E: /* 7E JLE Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if ((sf != of) || zf) {
                     ip = ip + temp16;
@@ -2955,7 +2957,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0x7F: /* 7F JG Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!zf && (sf == of)) {
                     ip = ip + temp16;
@@ -3819,7 +3821,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0xE0: /* E0 LOOPNZ Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 CPU_CX = CPU_CX - 1;
                 if ((CPU_CX) && !zf) {
@@ -3828,7 +3830,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0xE1: /* E1 LOOPZ Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 CPU_CX = CPU_CX - 1;
                 if (CPU_CX && (zf == 1)) {
@@ -3837,7 +3839,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0xE2: /* E2 LOOP Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 CPU_CX = CPU_CX - 1;
                 if (CPU_CX) {
@@ -3846,7 +3848,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0xE3: /* E3 JCXZ Jb */
-                temp16 = signext(getmem8(CPU_CS, ip));
+                temp16 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 if (!CPU_CX) {
                     ip = ip + temp16;
@@ -3899,7 +3901,7 @@ void exec86(uint32_t execloops) {
                 break;
 
             case 0xEB: /* EB JMP Jb */
-                oper1 = signext(getmem8(CPU_CS, ip));
+                oper1 = signext(opcode2); //getmem8(CPU_CS, ip));
                 StepIP(1);
                 ip = ip + oper1;
                 break;
