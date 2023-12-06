@@ -2911,7 +2911,7 @@ void exec86(uint32_t execloops) {
                     ip = ip + temp16;
                 }
                 break;
-
+            case 0x67: // assumed 77h alias https://github.com/86Box/86Box/blob/master/src/cpu/808x.c
             case 0x76: /* 76 JBE Jb */
                 temp16 = signext(getmem8(CPU_CS, ip));
                 StepIP(1);
@@ -4039,6 +4039,8 @@ void exec86(uint32_t execloops) {
                 break;
 
             default:
+        sprintf(tmp, "opcode: %02Xh CS:IP [%08X:%08X] AX: %04Xh BX: %04Xh CX: %04Xh DX: %04Xh",
+         opcode, CPU_CS, CPU_IP, CPU_AX, CPU_BX, CPU_CX, CPU_DX); logMsg(tmp);
                 intcall86(6);
                 break;
         }
